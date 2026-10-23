@@ -144,7 +144,8 @@ wss.on('connection', (ws) => {
       const room = {
         players: new Map(),
         states: new Map(),
-        roomLightsOn: true
+        roomLightsOn: true,
+        pistolAvailable: true
       };
 
       rooms.set(code, room);
@@ -156,7 +157,8 @@ wss.on('connection', (ws) => {
         roomCode: code,
         playerId: ws.id,
         players: [ws.id],
-        roomLightsOn: room.roomLightsOn
+        roomLightsOn: room.roomLightsOn,
+        pistolAvailable: room.pistolAvailable
       });
 
       return;
@@ -189,7 +191,8 @@ wss.on('connection', (ws) => {
           roomCode: code,
           playerId: ws.id,
           players: [...room.players.keys()],
-          roomLightsOn: room.roomLightsOn
+          roomLightsOn: room.roomLightsOn,
+          pistolAvailable: room.pistolAvailable
         });
         return;
       }
@@ -222,7 +225,8 @@ wss.on('connection', (ws) => {
         roomCode: code,
         playerId: ws.id,
         players: [...room.players.keys()],
-          roomLightsOn: room.roomLightsOn
+          roomLightsOn: room.roomLightsOn,
+          pistolAvailable: room.pistolAvailable
       });
 
       for (const [playerId, state] of room.states) {
@@ -279,6 +283,36 @@ wss.on('connection', (ws) => {
         type: 'roomLights',
         roomLightsOn: room.roomLightsOn
       }, ws.id);
+      return;
+    }
+
+    if (message.type === 'collectPistol') {
+      const room = rooms.get(ws.roomCode);
+
+      if (!room || !room.players.has(ws.id)) {
+        send(ws, {
+          type: 'pistolAvailability',
+          available: false,
+          playerId: null
+        });
+        return;
+      }
+
+      if (!room.pistolAvailable) {
+        send(ws, {
+          type: 'pistolAvailability',
+          available: false,
+          playerId: null
+        });
+        return;
+      }
+
+      room.pistolAvailable = false;
+      broadcast(room, {
+        type: 'pistolAvailability',
+        available: false,
+        playerId: ws.id
+      });
       return;
     }
 
