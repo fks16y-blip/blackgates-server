@@ -1,170 +1,295 @@
+
 const http = require('http');
-const { WebSocketServer, WebSocket } = require('ws');
 const crypto = require('crypto');
+const { WebSocketServer, WebSocket } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 4;
 const rooms = new Map();
 
 const server = http.createServer((req, res) => {
-if (req.url === '/' || req.url === '/health') {
-res.writeHead(200, { 'Content-Type': 'application/json' });
-return res.end(JSON.stringify({
-game: 'Black Gates',
-status: 'online',
-rooms: rooms.size
-}));
-}
+  if (req.url === '/' || req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      game: 'Black Gates',
+      status: 'online',
+      rooms: rooms.size
+    }));
+    return;
+  }
 
-res.writeHead(404);
-res.end('Not found');
+  res.writeHead(404);
+  res.end('Not found');
 });
 
 const wss = new WebSocketServer({ server });
 
 function send(ws, data) {
-if (ws.readyState === WebSocket.OPEN) {
-ws.send(JSON.stringify(data));
-}
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
 }
 
-function broadcast(room, data, excluded = null) {
-for (const player of room.players.values()) {
-if (player !== excluded) send(player, data);
-}
+function broadcast(room, data, excludedId = null) {
+  for (const [id, ws] of room.players) {
+    if (id !== excludedId) send(ws, data);
+  }
 }
 
 function leaveRoom(ws) {
-if (!ws.roomCode) return;
+  const code = ws.roomCode;
+  if (!code) return;
 
-const room = rooms.get(ws.roomCode);
-if (room) {
-room.players.delete(ws.id);
+  const room = rooms.get(code);
 
-broadcast(room, {
-  type: 'playerLeft',
-  playerId: ws.id
-});
+  ws.roomCode = null;
 
-if (room.players.size === 0) {
-  rooms.delete(ws.roomCode);
+  if (!room) return;
+
+  room.players.delete(ws.id);
+  room.states.delete(ws.id);
+
+  broadcast(room, {
+    type: 'playerLeft',
+    playerId: ws.id
+  });
+
+  if (room.players.size === 0) {
+    rooms.delete(code);
+  }
 }
 
-}
+function validState(state) {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    return false;
+  }
 
-ws.roomCode = null;
+  const allowed = ['x', 'y', 'z', 'rotationY', 'yaw'];
+
+  for (const key of allowed) {
+    if (state[key] !== undefined) {
+      if (
+        typeof state[key] !== 'number' ||
+        !Number.isFinite(state[key])
+      ) {
+        return false;
+      }
+    }
+  }
+
+  if (state.x === undefined || state.z === undefined) {
+    return false;
+  }
+
+  return (
+    Math.abs(state.x) <= 1000 &&
+    Math.abs(state.z) <= 1000 &&
+    Math.abs(state.y ?? 0) <= 100 &&
+    Math.abs(state.rotationY ?? 0) <= Math.PI * 100 &&
+    Math.abs(state.yaw ?? 0) <= Math.PI * 100
+  );
 }
 
 wss.on('connection', (ws) => {
-ws.id = crypto.randomUUID();
-ws.roomCode = null;
-
-send(ws, {
-type: 'connected',
-playerId: ws.id
-});
-
-ws.on('message', (raw) => {
-let message;
-
-try {
-  message = JSON.parse(raw.toString());
-} catch {
-  return send(ws, { type: 'error', message: 'Mensagem inválida.' });
-}
-
-if (!message || typeof message.type !== 'string') {
-  return send(ws, { type: 'error', message: 'Tipo de mensagem inválido.' });
-}
-
-if (message.type === 'createRoom') {
-  leaveRoom(ws);
-
-  let code;
-  do {
-    code = crypto.randomBytes(3)
-      .toString('hex')
-      .slice(0, 5)
-      .toUpperCase();
-  } while (rooms.has(code));
-
-  const room = { players: new Map() };
-  rooms.set(code, room);
-  room.players.set(ws.id, ws);
-  ws.roomCode = code;
-
-  return send(ws, {
-    type: 'roomCreated',
-    roomCode: code,
-    playerId: ws.id,
-    players: [ws.id]
-  });
-}
-
-if (message.type === 'joinRoom') {
-  const code = String(message.roomCode || '').trim().toUpperCase();
-  const room = rooms.get(code);
-
-  if (!room) {
-    return send(ws, { type: 'error', message: 'Sala não encontrada.' });
-  }
-
-  if (room.players.size >= MAX_PLAYERS) {
-    return send(ws, { type: 'error', message: 'Sala cheia.' });
-  }
-
-  leaveRoom(ws);
-
-  room.players.set(ws.id, ws);
-  ws.roomCode = code;
+  ws.id = crypto.randomUUID();
+  ws.roomCode = null;
 
   send(ws, {
-    type: 'roomJoined',
-    roomCode: code,
-    playerId: ws.id,
-    players: [...room.players.keys()]
+    type: 'connected',
+    playerId: ws.id
   });
 
-  broadcast(room, {
-    type: 'playerJoined',
-    playerId: ws.id
-  }, ws);
+  ws.on('message', (raw) => {
+    let message;
 
-  return;
-}
+    try {
+      message = JSON.parse(raw.toString());
+    } catch {
+      send(ws, {
+        type: 'error',
+        message: 'Mensagem inválida.'
+      });
+      return;
+    }
 
-if (message.type === 'leaveRoom') {
-  leaveRoom(ws);
-  return send(ws, { type: 'leftRoom' });
-}
+    if (!message || typeof message.type !== 'string') {
+      send(ws, {
+        type: 'error',
+        message: 'Tipo de mensagem inválido.'
+      });
+      return;
+    }
 
-if (message.type === 'sync') {
-  if (!ws.roomCode) {
-    return send(ws, { type: 'error', message: 'Entre em uma sala primeiro.' });
-  }
+    if (message.type === 'createRoom') {
+      leaveRoom(ws);
 
-  const room = rooms.get(ws.roomCode);
-  if (!room) return leaveRoom(ws);
+      let code;
 
-  broadcast(room, {
-    type: 'sync',
-    playerId: ws.id,
-    state: message.state
-  }, ws);
+      do {
+        code = String(
+          crypto.randomInt(0, 100000)
+        ).padStart(5, '0');
+      } while (rooms.has(code));
 
-  return;
-}
+      const room = {
+        players: new Map(),
+        states: new Map()
+      };
 
-if (message.type === 'ping') {
-  return send(ws, { type: 'pong' });
-}
+      rooms.set(code, room);
+      room.players.set(ws.id, ws);
+      ws.roomCode = code;
 
-});
+      send(ws, {
+        type: 'roomCreated',
+        roomCode: code,
+        playerId: ws.id,
+        players: [ws.id]
+      });
 
-ws.on('close', () => leaveRoom(ws));
-ws.on('error', () => leaveRoom(ws));
+      return;
+    }
+
+    if (message.type === 'joinRoom') {
+      const code = String(message.roomCode ?? '').trim();
+
+      if (!/^\d{5}$/.test(code)) {
+        send(ws, {
+          type: 'error',
+          message: 'O código deve ter exatamente 5 números.'
+        });
+        return;
+      }
+
+      let room = rooms.get(code);
+
+      if (!room) {
+        send(ws, {
+          type: 'error',
+          message: 'Sala não encontrada.'
+        });
+        return;
+      }
+
+      if (ws.roomCode === code) {
+        send(ws, {
+          type: 'roomJoined',
+          roomCode: code,
+          playerId: ws.id,
+          players: [...room.players.keys()]
+        });
+        return;
+      }
+
+      if (room.players.size >= MAX_PLAYERS) {
+        send(ws, {
+          type: 'error',
+          message: 'Sala cheia. Máximo de 4 jogadores.'
+        });
+        return;
+      }
+
+      leaveRoom(ws);
+
+      room = rooms.get(code);
+
+      if (!room) {
+        send(ws, {
+          type: 'error',
+          message: 'A sala não está mais disponível.'
+        });
+        return;
+      }
+
+      room.players.set(ws.id, ws);
+      ws.roomCode = code;
+
+      send(ws, {
+        type: 'roomJoined',
+        roomCode: code,
+        playerId: ws.id,
+        players: [...room.players.keys()]
+      });
+
+      for (const [playerId, state] of room.states) {
+        send(ws, {
+          type: 'sync',
+          playerId,
+          state
+        });
+      }
+
+      broadcast(room, {
+        type: 'playerJoined',
+        playerId: ws.id
+      }, ws.id);
+
+      return;
+    }
+
+    if (message.type === 'leaveRoom') {
+      leaveRoom(ws);
+
+      send(ws, {
+        type: 'leftRoom'
+      });
+
+      return;
+    }
+
+    if (message.type === 'sync') {
+      if (!ws.roomCode) {
+        send(ws, {
+          type: 'error',
+          message: 'Entre em uma sala primeiro.'
+        });
+        return;
+      }
+
+      const room = rooms.get(ws.roomCode);
+
+      if (!room || !room.players.has(ws.id)) {
+        leaveRoom(ws);
+        return;
+      }
+
+      if (!validState(message.state)) {
+        send(ws, {
+          type: 'error',
+          message: 'Posição do jogador inválida.'
+        });
+        return;
+      }
+
+      const state = {
+        x: message.state.x,
+        y: message.state.y ?? 0,
+        z: message.state.z,
+        rotationY: message.state.rotationY ?? 0,
+        yaw: message.state.yaw ?? 0
+      };
+
+      room.states.set(ws.id, state);
+
+      broadcast(room, {
+        type: 'sync',
+        playerId: ws.id,
+        state
+      }, ws.id);
+
+      return;
+    }
+
+    if (message.type === 'ping') {
+      send(ws, { type: 'pong' });
+    }
+  });
+
+  ws.on('close', () => leaveRoom(ws));
+  ws.on('error', () => leaveRoom(ws));
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-console.log("Black Gates server listening on port ${PORT}");
+  console.log(`Black Gates server listening on port ${PORT}`);
 });
+    
