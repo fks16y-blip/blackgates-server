@@ -64,20 +64,30 @@ function validState(state) {
     return false;
   }
 
-  const allowed = ['x', 'y', 'z', 'rotationY', 'yaw'];
+  const numericFields = [
+    'x', 'y', 'z', 'rotationY', 'yaw',
+    'supportFold', 'supportHeight', 'supportTilt'
+  ];
 
-  for (const key of allowed) {
-    if (state[key] !== undefined) {
-      if (
-        typeof state[key] !== 'number' ||
-        !Number.isFinite(state[key])
-      ) {
-        return false;
-      }
+  for (const key of numericFields) {
+    if (state[key] !== undefined &&
+        (typeof state[key] !== 'number' ||
+         !Number.isFinite(state[key]))) {
+      return false;
     }
   }
 
-  if (state.x === undefined || state.z === undefined) {
+  const booleanFields = [
+    'moving', 'running', 'pistolEquipped', 'flashlightEquipped'
+  ];
+
+  for (const key of booleanFields) {
+    if (state[key] !== undefined && typeof state[key] !== 'boolean') {
+      return false;
+    }
+  }
+
+  if (typeof state.x !== 'number' || typeof state.z !== 'number') {
     return false;
   }
 
@@ -133,7 +143,8 @@ wss.on('connection', (ws) => {
 
       const room = {
         players: new Map(),
-        states: new Map()
+        states: new Map(),
+        roomLightsOn: true
       };
 
       rooms.set(code, room);
@@ -144,7 +155,8 @@ wss.on('connection', (ws) => {
         type: 'roomCreated',
         roomCode: code,
         playerId: ws.id,
-        players: [ws.id]
+        players: [ws.id],
+        roomLightsOn: room.roomLightsOn
       });
 
       return;
@@ -176,7 +188,8 @@ wss.on('connection', (ws) => {
           type: 'roomJoined',
           roomCode: code,
           playerId: ws.id,
-          players: [...room.players.keys()]
+          players: [...room.players.keys()],
+          roomLightsOn: room.roomLightsOn
         });
         return;
       }
@@ -208,7 +221,8 @@ wss.on('connection', (ws) => {
         type: 'roomJoined',
         roomCode: code,
         playerId: ws.id,
-        players: [...room.players.keys()]
+        players: [...room.players.keys()],
+          roomLightsOn: room.roomLightsOn
       });
 
       for (const [playerId, state] of room.states) {
@@ -237,6 +251,37 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (message.type === 'roomLights') {
+      if (!ws.roomCode) {
+        send(ws, {
+          type: 'error',
+          message: 'Entre em uma sala primeiro.'
+        });
+        return;
+      }
+
+      const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) {
+        leaveRoom(ws);
+        return;
+      }
+
+      if (typeof message.roomLightsOn !== 'boolean') {
+        send(ws, {
+          type: 'error',
+          message: 'Estado das luzes inválido.'
+        });
+        return;
+      }
+
+      room.roomLightsOn = message.roomLightsOn;
+      broadcast(room, {
+        type: 'roomLights',
+        roomLightsOn: room.roomLightsOn
+      }, ws.id);
+      return;
+    }
+
     if (message.type === 'sync') {
       if (!ws.roomCode) {
         send(ws, {
@@ -262,9 +307,8 @@ wss.on('connection', (ws) => {
       }
 
       const state = {
-        x: message.state.x,
+        ...message.state,
         y: message.state.y ?? 0,
-        z: message.state.z,
         rotationY: message.state.rotationY ?? 0,
         yaw: message.state.yaw ?? 0
       };
