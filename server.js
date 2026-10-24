@@ -78,7 +78,7 @@ function validState(state) {
   }
 
   const booleanFields = [
-    'moving', 'running', 'pistolEquipped', 'flashlightEquipped'
+    'moving', 'running', 'crouching', 'pistolEquipped', 'flashlightEquipped'
   ];
 
   for (const key of booleanFields) {
@@ -145,7 +145,9 @@ wss.on('connection', (ws) => {
         players: new Map(),
         states: new Map(),
         roomLightsOn: true,
-        pistolAvailable: true
+        pistolAvailable: true,
+        flashlightAvailable: true,
+        ammoAvailable: true
       };
 
       rooms.set(code, room);
@@ -158,7 +160,9 @@ wss.on('connection', (ws) => {
         playerId: ws.id,
         players: [ws.id],
         roomLightsOn: room.roomLightsOn,
-        pistolAvailable: room.pistolAvailable
+        pistolAvailable: room.pistolAvailable,
+          flashlightAvailable: room.flashlightAvailable,
+          ammoAvailable: room.ammoAvailable
       });
 
       return;
@@ -192,7 +196,9 @@ wss.on('connection', (ws) => {
           playerId: ws.id,
           players: [...room.players.keys()],
           roomLightsOn: room.roomLightsOn,
-          pistolAvailable: room.pistolAvailable
+          pistolAvailable: room.pistolAvailable,
+          flashlightAvailable: room.flashlightAvailable,
+          ammoAvailable: room.ammoAvailable
         });
         return;
       }
@@ -226,7 +232,9 @@ wss.on('connection', (ws) => {
         playerId: ws.id,
         players: [...room.players.keys()],
           roomLightsOn: room.roomLightsOn,
-          pistolAvailable: room.pistolAvailable
+          pistolAvailable: room.pistolAvailable,
+          flashlightAvailable: room.flashlightAvailable,
+          ammoAvailable: room.ammoAvailable
       });
 
       for (const [playerId, state] of room.states) {
@@ -283,6 +291,32 @@ wss.on('connection', (ws) => {
         type: 'roomLights',
         roomLightsOn: room.roomLightsOn
       }, ws.id);
+      return;
+    }
+
+
+    if (message.type === 'collectFlashlight' ||
+        message.type === 'collectAmmo') {
+      const isFlashlight = message.type === 'collectFlashlight';
+      const type = isFlashlight
+        ? 'flashlightAvailability'
+        : 'ammoAvailability';
+      const field = isFlashlight
+        ? 'flashlightAvailable'
+        : 'ammoAvailable';
+      const room = rooms.get(ws.roomCode);
+
+      if (!room || !room.players.has(ws.id) || !room[field]) {
+        send(ws, { type, available: false, playerId: null });
+        return;
+      }
+
+      room[field] = false;
+      broadcast(room, {
+        type,
+        available: false,
+        playerId: ws.id
+      });
       return;
     }
 
