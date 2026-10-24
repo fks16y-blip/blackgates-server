@@ -350,6 +350,15 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (message.type === 'shoot') {
+      const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) {
+        return;
+      }
+      broadcast(room, { type: 'shoot', playerId: ws.id }, ws.id);
+      return;
+    }
+
     if (message.type === 'sync') {
       if (!ws.roomCode) {
         send(ws, {
