@@ -66,7 +66,7 @@ function validState(state) {
 
   const numericFields = [
     'x', 'y', 'z', 'rotationY', 'yaw',
-    'supportFold', 'supportHeight', 'supportTilt'
+    'aimPitch', 'supportFold', 'supportHeight', 'supportTilt'
   ];
 
   for (const key of numericFields) {
