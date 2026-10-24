@@ -440,7 +440,11 @@ wss.on('connection', (ws) => {
 
       if (targetId) {
         const oldHP = room.hp.get(targetId) ?? 100;
-        const newHP = Math.max(0, oldHP - 25);
+        const targetState = room.states.get(targetId);
+        const inX1 = targetState &&
+          Math.abs(targetState.x - 1000) <= 25 &&
+          Math.abs(targetState.z - 1000) <= 25;
+        const newHP = inX1 ? Math.max(0, oldHP - 25) : 100;
         room.hp.set(targetId, newHP);
 
         const targetSocket = room.players.get(targetId);
