@@ -51,10 +51,20 @@ function leaveRoom(ws) {
   if (room.inventory) room.inventory.delete(ws.id);
   if (room.hp) room.hp.delete(ws.id);
   if (room.lastShotAt) room.lastShotAt.delete(ws.id);
+  if (room.x1Ready) room.x1Ready.clear();
+  room.x1Started = false;
 
   broadcast(room, {
     type: 'playerLeft',
     playerId: ws.id
+  });
+
+  broadcast(room, {
+    type: 'x1ReadyUpdate',
+    readyPlayers: [],
+    playerCount: room.players.size,
+    started: false,
+    message: 'Um jogador saiu. A prontidão do X1 foi reiniciada.'
   });
 
   if (room.players.size === 0) {
@@ -95,8 +105,8 @@ function validState(state) {
   }
 
   return (
-    Math.abs(state.x) <= 1000 &&
-    Math.abs(state.z) <= 1000 &&
+    Math.abs(state.x) <= 1100 &&
+    Math.abs(state.z) <= 1100 &&
     Math.abs(state.y ?? 0) <= 100 &&
     Math.abs(state.rotationY ?? 0) <= Math.PI * 100 &&
     Math.abs(state.yaw ?? 0) <= Math.PI * 100
@@ -156,7 +166,9 @@ wss.on('connection', (ws) => {
         ammoItems: [true, true],
         inventory: new Map(),
         hp: new Map(),
-        lastShotAt: new Map()
+        lastShotAt: new Map(),
+        x1Ready: new Set(),
+        x1Started: false
       };
 
       rooms.set(code, room);
@@ -463,6 +475,80 @@ wss.on('connection', (ws) => {
           hp: newHP
         });
       }
+      return;
+    }
+
+    if (message.type === 'x1Ready') {
+      const room = rooms.get(ws.roomCode);
+
+      if (!room || !room.players.has(ws.id)) {
+        send(ws, { type: 'error', message: 'Entre em uma sala primeiro.' });
+        return;
+      }
+
+      if (room.players.size !== 2) {
+        send(ws, {
+          type: 'x1ReadyUpdate',
+          readyPlayers: [...room.x1Ready],
+          playerCount: room.players.size,
+          started: false,
+          message: 'O X1 precisa de exatamente 2 jogadores.'
+        });
+        return;
+      }
+
+      const state = room.states.get(ws.id);
+      const inEntryLane = state &&
+        state.x >= -8.25 && state.x <= -4.35 &&
+        state.z >= -30 && state.z < -9;
+
+      if (!inEntryLane) {
+        send(ws, {
+          type: 'error',
+          message: 'Vá até a entrada do portão X1 para ficar pronto.'
+        });
+        return;
+      }
+
+      if (room.x1Started) {
+        send(ws, {
+          type: 'x1ReadyUpdate',
+          readyPlayers: [...room.x1Ready],
+          playerCount: room.players.size,
+          started: true
+        });
+        return;
+      }
+
+      if (room.x1Ready.has(ws.id)) {
+        room.x1Ready.delete(ws.id);
+      } else {
+        room.x1Ready.add(ws.id);
+      }
+
+      const readyPlayers = [...room.x1Ready];
+      broadcast(room, {
+        type: 'x1ReadyUpdate',
+        readyPlayers,
+        playerCount: room.players.size,
+        started: false
+      });
+
+      if (room.x1Ready.size === 2) {
+        const ids = [...room.players.keys()];
+        room.x1Started = true;
+
+        const spawns = {
+          [ids[0]]: { x: 996, y: 0, z: 1000 },
+          [ids[1]]: { x: 1004, y: 0, z: 1000 }
+        };
+
+        broadcast(room, {
+          type: 'x1Start',
+          spawns
+        });
+      }
+
       return;
     }
 
