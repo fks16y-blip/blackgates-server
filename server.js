@@ -49,6 +49,8 @@ function leaveRoom(ws) {
   room.players.delete(ws.id);
   room.states.delete(ws.id);
   if (room.inventory) room.inventory.delete(ws.id);
+  if (room.hp) room.hp.delete(ws.id);
+  if (room.lastShotAt) room.lastShotAt.delete(ws.id);
 
   broadcast(room, {
     type: 'playerLeft',
@@ -152,12 +154,16 @@ wss.on('connection', (ws) => {
         pistolItems: [true, true],
         flashlightItems: [true, true],
         ammoItems: [true, true],
-        inventory: new Map()
+        inventory: new Map(),
+        hp: new Map(),
+        lastShotAt: new Map()
       };
 
       rooms.set(code, room);
       room.players.set(ws.id, ws);
       room.inventory.set(ws.id, { pistol: false, flashlight: false });
+      room.hp.set(ws.id, 100);
+      room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
 
       send(ws, {
@@ -237,6 +243,8 @@ wss.on('connection', (ws) => {
 
       room.players.set(ws.id, ws);
       room.inventory.set(ws.id, { pistol: false, flashlight: false });
+      room.hp.set(ws.id, 100);
+      room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
 
       send(ws, {
@@ -368,10 +376,89 @@ wss.on('connection', (ws) => {
 
     if (message.type === 'shoot') {
       const room = rooms.get(ws.roomCode);
-      if (!room || !room.players.has(ws.id)) {
+      if (!room || !room.players.has(ws.id)) return;
+
+      const shooterState = room.states.get(ws.id);
+      const inventory = room.inventory.get(ws.id);
+      if (!shooterState || !inventory?.pistol ||
+          shooterState.pistolEquipped !== true) {
         return;
       }
-      broadcast(room, { type: 'shoot', playerId: ws.id }, ws.id);
+
+      const now = Date.now();
+      const previousShot = room.lastShotAt.get(ws.id) || 0;
+      if (now - previousShot < 250) return;
+      room.lastShotAt.set(ws.id, now);
+
+      // Direção da câmera, usando o mesmo sistema de yaw/pitch do cliente.
+      const yaw = shooterState.yaw || 0;
+      const pitch = shooterState.aimPitch || 0;
+      const dx = -Math.sin(yaw) * Math.cos(pitch);
+      const dy = -Math.sin(pitch);
+      const dz = -Math.cos(yaw) * Math.cos(pitch);
+
+      const sx = shooterState.x;
+      const sy = (shooterState.y || 0) +
+        (shooterState.crouching ? 0.95 : 1.35);
+      const sz = shooterState.z;
+
+      const maxRange = 35;
+      const hitRadius = 0.8;
+      let targetId = null;
+      let targetDistance = maxRange + 1;
+
+      for (const [otherId, targetState] of room.states) {
+        if (otherId === ws.id || !room.players.has(otherId)) continue;
+
+        const tx = targetState.x - sx;
+        const ty = (targetState.y || 0) +
+          (targetState.crouching ? 0.75 : 1.0) - sy;
+        const tz = targetState.z - sz;
+
+        // Projeção sobre o raio: precisa estar à frente e dentro do alcance.
+        const along = tx * dx + ty * dy + tz * dz;
+        if (along < 0 || along > maxRange || along >= targetDistance) {
+          continue;
+        }
+
+        const px = tx - along * dx;
+        const py = ty - along * dy;
+        const pz = tz - along * dz;
+        if (px * px + py * py + pz * pz > hitRadius * hitRadius) {
+          continue;
+        }
+
+        targetId = otherId;
+        targetDistance = along;
+      }
+
+      // O servidor confirma o tiro; os demais clientes reproduzem o som.
+      broadcast(room, {
+        type: 'shoot',
+        playerId: ws.id
+      }, ws.id);
+
+      if (targetId) {
+        const oldHP = room.hp.get(targetId) ?? 100;
+        const newHP = Math.max(0, oldHP - 25);
+        room.hp.set(targetId, newHP);
+
+        const targetSocket = room.players.get(targetId);
+        send(targetSocket, {
+          type: 'playerHP',
+          hp: newHP,
+          maxHP: 100,
+          damage: oldHP - newHP,
+          attackerId: ws.id
+        });
+
+        broadcast(room, {
+          type: 'playerHit',
+          playerId: targetId,
+          attackerId: ws.id,
+          hp: newHP
+        });
+      }
       return;
     }
 
