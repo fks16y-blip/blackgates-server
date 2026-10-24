@@ -48,6 +48,7 @@ function leaveRoom(ws) {
 
   room.players.delete(ws.id);
   room.states.delete(ws.id);
+  if (room.inventory) room.inventory.delete(ws.id);
 
   broadcast(room, {
     type: 'playerLeft',
@@ -147,11 +148,16 @@ wss.on('connection', (ws) => {
         roomLightsOn: true,
         pistolAvailable: true,
         flashlightAvailable: true,
-        ammoAvailable: true
+        ammoAvailable: true,
+        pistolItems: [true, true],
+        flashlightItems: [true, true],
+        ammoItems: [true, true],
+        inventory: new Map()
       };
 
       rooms.set(code, room);
       room.players.set(ws.id, ws);
+      room.inventory.set(ws.id, { pistol: false, flashlight: false });
       ws.roomCode = code;
 
       send(ws, {
@@ -162,7 +168,10 @@ wss.on('connection', (ws) => {
         roomLightsOn: room.roomLightsOn,
         pistolAvailable: room.pistolAvailable,
           flashlightAvailable: room.flashlightAvailable,
-          ammoAvailable: room.ammoAvailable
+          ammoAvailable: room.ammoAvailable,
+        pistolItems: room.pistolItems,
+        flashlightItems: room.flashlightItems,
+        ammoItems: room.ammoItems
       });
 
       return;
@@ -198,7 +207,10 @@ wss.on('connection', (ws) => {
           roomLightsOn: room.roomLightsOn,
           pistolAvailable: room.pistolAvailable,
           flashlightAvailable: room.flashlightAvailable,
-          ammoAvailable: room.ammoAvailable
+          ammoAvailable: room.ammoAvailable,
+        pistolItems: room.pistolItems,
+        flashlightItems: room.flashlightItems,
+        ammoItems: room.ammoItems
         });
         return;
       }
@@ -224,6 +236,7 @@ wss.on('connection', (ws) => {
       }
 
       room.players.set(ws.id, ws);
+      room.inventory.set(ws.id, { pistol: false, flashlight: false });
       ws.roomCode = code;
 
       send(ws, {
@@ -234,7 +247,10 @@ wss.on('connection', (ws) => {
           roomLightsOn: room.roomLightsOn,
           pistolAvailable: room.pistolAvailable,
           flashlightAvailable: room.flashlightAvailable,
-          ammoAvailable: room.ammoAvailable
+          ammoAvailable: room.ammoAvailable,
+          pistolItems: room.pistolItems,
+          flashlightItems: room.flashlightItems,
+          ammoItems: room.ammoItems
       });
 
       for (const [playerId, state] of room.states) {
@@ -295,57 +311,57 @@ wss.on('connection', (ws) => {
     }
 
 
-    if (message.type === 'collectFlashlight' ||
-        message.type === 'collectAmmo') {
-      const isFlashlight = message.type === 'collectFlashlight';
-      const type = isFlashlight
-        ? 'flashlightAvailability'
-        : 'ammoAvailability';
-      const field = isFlashlight
-        ? 'flashlightAvailable'
-        : 'ammoAvailable';
+    if (
+      message.type === 'collectFlashlight' ||
+      message.type === 'collectPistol' ||
+      message.type === 'collectAmmo'
+    ) {
       const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) return;
 
-      if (!room || !room.players.has(ws.id) || !room[field]) {
-        send(ws, { type, available: false, playerId: null });
-        return;
-      }
+      const itemType = message.type === 'collectFlashlight'
+        ? 'flashlight'
+        : message.type === 'collectPistol' ? 'pistol' : 'ammo';
 
-      room[field] = false;
-      broadcast(room, {
-        type,
-        available: false,
-        playerId: ws.id
-      });
-      return;
-    }
+      const field = itemType + 'Items';
+      const itemId = Number(message.itemId ?? 0);
+      const items = room[field];
 
-    if (message.type === 'collectPistol') {
-      const room = rooms.get(ws.roomCode);
-
-      if (!room || !room.players.has(ws.id)) {
+      if (!Number.isInteger(itemId) || itemId < 0 ||
+          itemId >= items.length || !items[itemId]) {
         send(ws, {
-          type: 'pistolAvailability',
-          available: false,
-          playerId: null
+          type: 'pickupRejected',
+          itemType,
+          itemId,
+          reason: 'unavailable'
         });
         return;
       }
 
-      if (!room.pistolAvailable) {
-        send(ws, {
-          type: 'pistolAvailability',
-          available: false,
-          playerId: null
-        });
-        return;
+      if (itemType !== 'ammo') {
+        const inventory = room.inventory.get(ws.id);
+        if (!inventory || inventory[itemType]) {
+          send(ws, {
+            type: 'pickupRejected',
+            itemType,
+            itemId,
+            reason: 'already_owned'
+          });
+          return;
+        }
+        inventory[itemType] = true;
       }
 
-      room.pistolAvailable = false;
+      items[itemId] = false;
+      room[itemType + 'Available'] = items.some(Boolean);
+
       broadcast(room, {
-        type: 'pistolAvailability',
+        type: 'itemAvailability',
+        itemType,
+        itemId,
         available: false,
-        playerId: ws.id
+        playerId: ws.id,
+        items: [...items]
       });
       return;
     }
