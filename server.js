@@ -391,11 +391,8 @@ wss.on('connection', (ws) => {
       if (!room || !room.players.has(ws.id)) return;
 
       const shooterState = room.states.get(ws.id);
-      const inventory = room.inventory.get(ws.id);
-      if (!shooterState || !inventory?.pistol ||
-          shooterState.pistolEquipped !== true) {
-        return;
-      }
+      // Evita bloquear tiros por inventário ou equipamento atrasado no sync.
+      if (!shooterState) return;
 
       const now = Date.now();
       const previousShot = room.lastShotAt.get(ws.id) || 0;
