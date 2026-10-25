@@ -415,7 +415,7 @@ wss.on('connection', (ws) => {
       const sz = shooterState.z;
 
       const maxRange = 35;
-      const hitRadius = 0.8;
+      const hitRadius = 1.2;
       let targetId = null;
       let targetDistance = maxRange + 1;
 
@@ -456,7 +456,7 @@ wss.on('connection', (ws) => {
         const inX1 = targetState &&
           Math.abs(targetState.x - 1000) <= 25 &&
           Math.abs(targetState.z - 1000) <= 25;
-        const newHP = inX1 ? Math.max(0, oldHP - 25) : 100;
+        const newHP = inX1 ? Math.max(0, oldHP - 17) : 100;
         room.hp.set(targetId, newHP);
 
         const targetSocket = room.players.get(targetId);
