@@ -71,8 +71,8 @@ function startX1Round(room) {
 
   const ids = [...room.players.keys()];
   const spawns = {
-    [ids[0]]: { x: 996, y: 0, z: 1000 },
-    [ids[1]]: { x: 1004, y: 0, z: 1000 }
+    [ids[0]]: { x: 976, y: 0, z: 1000 },
+    [ids[1]]: { x: 1024, y: 0, z: 1000 }
   };
 
   broadcast(room, {
@@ -664,8 +664,8 @@ wss.on('connection', (ws) => {
         room.x1Started = true;
 
         const spawns = {
-          [ids[0]]: { x: 996, y: 0, z: 1000 },
-          [ids[1]]: { x: 1004, y: 0, z: 1000 }
+          [ids[0]]: { x: 976, y: 0, z: 1000 },
+          [ids[1]]: { x: 1024, y: 0, z: 1000 }
         };
 
         room.x1RoundNumber = 0;
