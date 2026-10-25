@@ -36,6 +36,86 @@ function broadcast(room, data, excludedId = null) {
   }
 }
 
+
+function resetX1Items(room) {
+  for (const type of ['pistol', 'flashlight', 'ammo']) {
+    const field = type + 'Items';
+    room[field] = room[field].map(() => true);
+    room[type + 'Available'] = true;
+    broadcast(room, {
+      type: 'itemAvailability',
+      itemType: type,
+      items: [...room[field]],
+      available: true,
+      playerId: null
+    });
+  }
+
+  for (const id of room.players.keys()) {
+    room.inventory.set(id, { pistol: false, flashlight: false });
+    room.hp.set(id, 100);
+    room.lastShotAt.set(id, 0);
+    send(room.players.get(id), {
+      type: 'playerHP', hp: 100, maxHP: 100, damage: 0
+    });
+  }
+}
+
+function startX1Round(room) {
+  if (!room.x1Started || room.players.size !== 2) return;
+  if (room.x1RoundTimer) clearInterval(room.x1RoundTimer);
+
+  room.x1RoundNumber = (room.x1RoundNumber || 0) + 1;
+  room.x1Phase = 'countdown';
+  resetX1Items(room);
+
+  const ids = [...room.players.keys()];
+  const spawns = {
+    [ids[0]]: { x: 996, y: 0, z: 1000 },
+    [ids[1]]: { x: 1004, y: 0, z: 1000 }
+  };
+
+  broadcast(room, {
+    type: 'x1RoundState',
+    phase: 'countdown',
+    countdown: 5,
+    round: room.x1RoundNumber,
+    scores: Object.fromEntries(room.x1Scores || []),
+    spawns
+  });
+
+  let remaining = 5;
+  room.x1RoundTimer = setInterval(() => {
+    if (!room.x1Started || room.players.size !== 2) {
+      clearInterval(room.x1RoundTimer);
+      room.x1RoundTimer = null;
+      return;
+    }
+
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(room.x1RoundTimer);
+      room.x1RoundTimer = null;
+      room.x1Phase = 'active';
+      broadcast(room, {
+        type: 'x1RoundState',
+        phase: 'active',
+        countdown: 0,
+        round: room.x1RoundNumber,
+        scores: Object.fromEntries(room.x1Scores || [])
+      });
+    } else {
+      broadcast(room, {
+        type: 'x1RoundState',
+        phase: 'countdown',
+        countdown: remaining,
+        round: room.x1RoundNumber,
+        scores: Object.fromEntries(room.x1Scores || [])
+      });
+    }
+  }, 1000);
+}
+
 function leaveRoom(ws) {
   const code = ws.roomCode;
   if (!code) return;
@@ -46,6 +126,12 @@ function leaveRoom(ws) {
 
   if (!room) return;
 
+  if (room.x1RoundTimer) {
+    clearInterval(room.x1RoundTimer);
+    clearTimeout(room.x1RoundTimer);
+    room.x1RoundTimer = null;
+  }
+  room.x1Phase = 'waiting';
   room.players.delete(ws.id);
   room.states.delete(ws.id);
   if (room.inventory) room.inventory.delete(ws.id);
@@ -168,7 +254,11 @@ wss.on('connection', (ws) => {
         hp: new Map(),
         lastShotAt: new Map(),
         x1Ready: new Set(),
-        x1Started: false
+        x1Started: false,
+        x1Phase: 'waiting',
+        x1RoundNumber: 0,
+        x1Scores: new Map(),
+        x1RoundTimer: null
       };
 
       rooms.set(code, room);
@@ -389,6 +479,7 @@ wss.on('connection', (ws) => {
     if (message.type === 'shoot') {
       const room = rooms.get(ws.roomCode);
       if (!room || !room.players.has(ws.id)) return;
+      if (room.x1Started && room.x1Phase !== 'active') return;
 
       const shooterState = room.states.get(ws.id);
       // Evita bloquear tiros por inventário ou equipamento atrasado no sync.
@@ -471,6 +562,43 @@ wss.on('connection', (ws) => {
           attackerId: ws.id,
           hp: newHP
         });
+
+        if (newHP === 0 && inX1 && room.x1Started && room.x1Phase === 'active') {
+          room.x1Phase = 'intermission';
+          const scores = room.x1Scores || new Map();
+          scores.set(ws.id, (scores.get(ws.id) || 0) + 1);
+          room.x1Scores = scores;
+
+          if (room.x1RoundTimer) {
+            clearInterval(room.x1RoundTimer);
+            room.x1RoundTimer = null;
+          }
+
+          const matchOver = scores.get(ws.id) >= 3;
+          broadcast(room, {
+            type: 'x1RoundEnd',
+            winnerId: ws.id,
+            defeatedId: targetId,
+            scores: Object.fromEntries(scores),
+            matchOver
+          });
+
+          if (matchOver) {
+            room.x1Phase = 'finished';
+            broadcast(room, {
+              type: 'x1MatchEnd',
+              winnerId: ws.id,
+              scores: Object.fromEntries(scores)
+            });
+          } else {
+            room.x1RoundTimer = setTimeout(() => {
+              room.x1RoundTimer = null;
+              if (room.x1Started && room.players.size === 2 && room.x1Phase === 'intermission') {
+                startX1Round(room);
+              }
+            }, 2500);
+          }
+        }
       }
       return;
     }
@@ -540,10 +668,16 @@ wss.on('connection', (ws) => {
           [ids[1]]: { x: 1004, y: 0, z: 1000 }
         };
 
+        room.x1RoundNumber = 0;
+        room.x1Scores = new Map(ids.map(id => [id, 0]));
+        room.x1Phase = 'countdown';
+
         broadcast(room, {
           type: 'x1Start',
           spawns
         });
+
+        startX1Round(room);
       }
 
       return;
