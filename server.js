@@ -603,6 +603,22 @@ wss.on('connection', (ws) => {
               winnerId: ws.id,
               scores: Object.fromEntries(scores)
             });
+
+            setTimeout(() => {
+              if (room.players.size !== 2 || room.x1Phase !== 'finished') return;
+
+              room.x1Started = false;
+              room.x1Phase = 'waiting';
+              room.x1Ready.clear();
+
+              broadcast(room, {
+                type: 'x1ReadyUpdate',
+                readyPlayers: [],
+                playerCount: room.players.size,
+                started: false,
+                message: 'X1 reiniciado. Os dois jogadores podem ficar prontos para outra partida.'
+              });
+            }, 2500);
           } else {
             room.x1RoundTimer = setTimeout(() => {
               room.x1RoundTimer = null;
