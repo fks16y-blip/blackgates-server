@@ -229,6 +229,19 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (message.type === 'playerDeath') {
+      const room = rooms.get(ws.roomCode);
+
+      if (room && room.players.get(ws.id) === ws) {
+        broadcast(room, {
+          type: 'playerDeath',
+          playerId: ws.id
+        }, ws.id);
+      }
+
+      return;
+    }
+
     if (message.type === 'createRoom') {
       leaveRoom(ws);
 
