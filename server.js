@@ -38,7 +38,7 @@ function broadcast(room, data, excludedId = null) {
 
 
 function resetX1Items(room) {
-  for (const type of ['pistol', 'flashlight', 'ammo']) {
+  for (const type of ['pistol', 'flashlight', 'ammo', 'ump']) {
     const field = type + 'Items';
     room[field] = room[field].map(() => true);
     room[type + 'Available'] = true;
@@ -52,7 +52,7 @@ function resetX1Items(room) {
   }
 
   for (const id of room.players.keys()) {
-    room.inventory.set(id, { pistol: false, flashlight: false });
+    room.inventory.set(id, { pistol: false, flashlight: false, ump: false });
     room.hp.set(id, 100);
     room.lastShotAt.set(id, 0);
     send(room.players.get(id), {
@@ -263,6 +263,8 @@ wss.on('connection', (ws) => {
         pistolItems: [true, true],
         flashlightItems: [true, true],
         ammoItems: [true, true],
+        umpAvailable: true,
+        umpItems: [true, true],
         inventory: new Map(),
         hp: new Map(),
         lastShotAt: new Map(),
@@ -276,7 +278,7 @@ wss.on('connection', (ws) => {
 
       rooms.set(code, room);
       room.players.set(ws.id, ws);
-      room.inventory.set(ws.id, { pistol: false, flashlight: false });
+      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
@@ -292,7 +294,9 @@ wss.on('connection', (ws) => {
           ammoAvailable: room.ammoAvailable,
         pistolItems: room.pistolItems,
         flashlightItems: room.flashlightItems,
-        ammoItems: room.ammoItems
+        ammoItems: room.ammoItems,
+        umpAvailable: room.umpAvailable,
+        umpItems: room.umpItems
       });
 
       return;
@@ -331,7 +335,9 @@ wss.on('connection', (ws) => {
           ammoAvailable: room.ammoAvailable,
         pistolItems: room.pistolItems,
         flashlightItems: room.flashlightItems,
-        ammoItems: room.ammoItems
+        ammoItems: room.ammoItems,
+        umpAvailable: room.umpAvailable,
+        umpItems: room.umpItems
         });
         return;
       }
@@ -357,7 +363,7 @@ wss.on('connection', (ws) => {
       }
 
       room.players.set(ws.id, ws);
-      room.inventory.set(ws.id, { pistol: false, flashlight: false });
+      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
@@ -373,7 +379,9 @@ wss.on('connection', (ws) => {
           ammoAvailable: room.ammoAvailable,
           pistolItems: room.pistolItems,
           flashlightItems: room.flashlightItems,
-          ammoItems: room.ammoItems
+          ammoItems: room.ammoItems,
+        umpAvailable: room.umpAvailable,
+        umpItems: room.umpItems
       });
 
       for (const [playerId, state] of room.states) {
@@ -437,14 +445,16 @@ wss.on('connection', (ws) => {
     if (
       message.type === 'collectFlashlight' ||
       message.type === 'collectPistol' ||
-      message.type === 'collectAmmo'
+      message.type === 'collectAmmo' ||
+      message.type === 'collectUMP'
     ) {
       const room = rooms.get(ws.roomCode);
       if (!room || !room.players.has(ws.id)) return;
 
       const itemType = message.type === 'collectFlashlight'
         ? 'flashlight'
-        : message.type === 'collectPistol' ? 'pistol' : 'ammo';
+        : message.type === 'collectPistol' ? 'pistol'
+        : message.type === 'collectUMP' ? 'ump' : 'ammo';
 
       const field = itemType + 'Items';
       const itemId = Number(message.itemId ?? 0);
@@ -515,37 +525,52 @@ wss.on('connection', (ws) => {
         (shooterState.crouching ? 0.95 : 1.35);
       const sz = shooterState.z;
 
-      const maxRange = 35;
-      const hitRadius = 1.2;
-      let targetId = null;
-      let targetDistance = maxRange + 1;
+      const maxRange = 20;
+  const hitZones = [
+    { part: 'head', y: 1.68, radius: 0.28, damage: 45 },
+    { part: 'chest', y: 1.22, radius: 0.38, damage: 25 },
+    { part: 'arms', y: 0.98, radius: 0.48, damage: 10 },
+    { part: 'legs', y: 0.48, radius: 0.38, damage: 12 }
+  ];
 
-      for (const [otherId, targetState] of room.states) {
-        if (otherId === ws.id || !room.players.has(otherId)) continue;
+  let targetId = null;
+  let targetDistance = maxRange + 1;
+  let targetPart = null;
+  let baseDamage = 0;
 
-        const tx = targetState.x - sx;
-        const ty = (targetState.y || 0) +
-          (targetState.crouching ? 0.75 : 1.0) - sy;
-        const tz = targetState.z - sz;
+  for (const [otherId, targetState] of room.states) {
+    if (otherId === ws.id || !room.players.has(otherId)) continue;
 
-        // Projeção sobre o raio: precisa estar à frente e dentro do alcance.
-        const along = tx * dx + ty * dy + tz * dz;
-        if (along < 0 || along > maxRange || along >= targetDistance) {
-          continue;
-        }
+    const tx = targetState.x - sx;
+    const tz = targetState.z - sz;
+    const targetY = targetState.y || 0;
+    const crouchOffset = targetState.crouching ? 0.65 : 0;
 
-        const px = tx - along * dx;
-        const py = ty - along * dy;
-        const pz = tz - along * dz;
-        if (px * px + py * py + pz * pz > hitRadius * hitRadius) {
-          continue;
-        }
+    for (const zone of hitZones) {
+      const zoneY = targetY + zone.y - crouchOffset;
+      const ty = zoneY - sy;
+      const along = tx * dx + ty * dy + tz * dz;
 
-        targetId = otherId;
-        targetDistance = along;
+      if (along < 0 || along > maxRange || along >= targetDistance) {
+        continue;
       }
 
-      // O servidor confirma o tiro; os demais clientes reproduzem o som.
+      const px = tx - along * dx;
+      const py = ty - along * dy;
+      const pz = tz - along * dz;
+
+      if (px * px + py * py + pz * pz > zone.radius * zone.radius) {
+        continue;
+      }
+
+      targetId = otherId;
+      targetDistance = along;
+      targetPart = zone.part;
+      baseDamage = zone.damage;
+    }
+  }
+
+  // O servidor confirma o tiro; os demais clientes reproduzem o som.
       broadcast(room, {
         type: 'shoot',
         playerId: ws.id
@@ -557,7 +582,12 @@ wss.on('connection', (ws) => {
         const inX1 = targetState &&
           Math.abs(targetState.x - 1000) <= 25 &&
           Math.abs(targetState.z - 1000) <= 25;
-        const newHP = inX1 ? Math.max(0, oldHP - 17) : 100;
+        const distanceMultiplier =
+      targetDistance <= 5 ? 1 :
+      targetDistance <= 10 ? 0.8 :
+      targetDistance <= 15 ? 0.6 : 0.35;
+    const damage = Math.max(1, Math.round(baseDamage * distanceMultiplier));
+    const newHP = inX1 ? Math.max(0, oldHP - damage) : 100;
         room.hp.set(targetId, newHP);
 
         const targetSocket = room.players.get(targetId);
