@@ -513,24 +513,37 @@ wss.on('connection', (ws) => {
       if (now - previousShot < 250) return;
       room.lastShotAt.set(ws.id, now);
 
-      // Direção da câmera, usando o mesmo sistema de yaw/pitch do cliente.
-      const yaw = shooterState.yaw || 0;
-      const pitch = shooterState.aimPitch || 0;
-      const dx = -Math.sin(yaw) * Math.cos(pitch);
-      const dy = -Math.sin(pitch);
-      const dz = -Math.cos(yaw) * Math.cos(pitch);
+      // Prioriza a mira real enviada pelo cliente; mantém fallback compatível.
+  const origin = message.origin;
+  const direction = message.direction;
+  const validAim = origin && direction &&
+    [origin.x, origin.y, origin.z, direction.x, direction.y, direction.z]
+      .every(value => typeof value === 'number' && Number.isFinite(value));
+  const originOffset = validAim
+    ? Math.hypot(origin.x - shooterState.x, origin.z - shooterState.z)
+    : Infinity;
+  const directionLength = validAim
+    ? Math.hypot(direction.x, direction.y, direction.z)
+    : 0;
+  const useCameraAim = validAim && originOffset <= 8 &&
+    directionLength >= 0.9 && directionLength <= 1.1;
 
-      const sx = shooterState.x;
-      const sy = (shooterState.y || 0) +
-        (shooterState.crouching ? 0.95 : 1.35);
-      const sz = shooterState.z;
+  const yaw = shooterState.yaw || 0;
+  const pitch = shooterState.aimPitch || 0;
+  const dx = useCameraAim ? direction.x / directionLength : -Math.sin(yaw) * Math.cos(pitch);
+  const dy = useCameraAim ? direction.y / directionLength : -Math.sin(pitch);
+  const dz = useCameraAim ? direction.z / directionLength : -Math.cos(yaw) * Math.cos(pitch);
 
-      const maxRange = 20;
+  const sx = useCameraAim ? origin.x : shooterState.x;
+  const sy = useCameraAim ? origin.y : (shooterState.y || 0) + (shooterState.crouching ? 0.95 : 1.35);
+  const sz = useCameraAim ? origin.z : shooterState.z;
+
+  const maxRange = 20;
   const hitZones = [
-    { part: 'head', y: 1.68, radius: 0.28, damage: 45 },
-    { part: 'chest', y: 1.22, radius: 0.38, damage: 25 },
-    { part: 'arms', y: 0.98, radius: 0.48, damage: 10 },
-    { part: 'legs', y: 0.48, radius: 0.38, damage: 12 }
+    { part: 'head', y: 1.68, radius: 0.38, damage: 45 },
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 25 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 10 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 12 }
   ];
 
   let targetId = null;
@@ -582,12 +595,16 @@ wss.on('connection', (ws) => {
         const inX1 = targetState &&
           Math.abs(targetState.x - 1000) <= 25 &&
           Math.abs(targetState.z - 1000) <= 25;
+        const damageDistance = Math.hypot(
+          targetState.x - shooterState.x,
+          targetState.z - shooterState.z
+        );
         const distanceMultiplier =
-      targetDistance <= 5 ? 1 :
-      targetDistance <= 10 ? 0.8 :
-      targetDistance <= 15 ? 0.6 : 0.35;
+          damageDistance <= 5 ? 1 :
+          damageDistance <= 10 ? 0.8 :
+          damageDistance <= 15 ? 0.6 : 0.35;
     const damage = Math.max(1, Math.round(baseDamage * distanceMultiplier));
-    const newHP = inX1 ? Math.max(0, oldHP - damage) : 100;
+    const newHP = (room.x1Started && room.x1Phase === 'active' && inX1) ? Math.max(0, oldHP - damage) : oldHP;
         room.hp.set(targetId, newHP);
 
         const targetSocket = room.players.get(targetId);
