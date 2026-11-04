@@ -38,7 +38,7 @@ function broadcast(room, data, excludedId = null) {
 
 
 function resetX1Items(room) {
-  for (const type of ['pistol', 'flashlight', 'ammo', 'ump']) {
+  for (const type of ['pistol', 'flashlight', 'ammo', 'ump', 'doze']) {
     const field = type + 'Items';
     room[field] = room[field].map(() => true);
     room[type + 'Available'] = true;
@@ -52,7 +52,7 @@ function resetX1Items(room) {
   }
 
   for (const id of room.players.keys()) {
-    room.inventory.set(id, { pistol: false, flashlight: false, ump: false });
+    room.inventory.set(id, { pistol: false, flashlight: false, ump: false, doze: false });
     room.hp.set(id, 100);
     room.lastShotAt.set(id, 0);
     send(room.players.get(id), {
@@ -265,6 +265,8 @@ wss.on('connection', (ws) => {
         ammoItems: [true, true],
         umpAvailable: true,
         umpItems: [true, true],
+        dozeAvailable: true,
+        dozeItems: [true, true],
         inventory: new Map(),
         hp: new Map(),
         lastShotAt: new Map(),
@@ -278,7 +280,7 @@ wss.on('connection', (ws) => {
 
       rooms.set(code, room);
       room.players.set(ws.id, ws);
-      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false });
+      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
@@ -296,7 +298,9 @@ wss.on('connection', (ws) => {
         flashlightItems: room.flashlightItems,
         ammoItems: room.ammoItems,
         umpAvailable: room.umpAvailable,
-        umpItems: room.umpItems
+        umpItems: room.umpItems,
+        dozeAvailable: room.dozeAvailable,
+        dozeItems: room.dozeItems
       });
 
       return;
@@ -337,7 +341,9 @@ wss.on('connection', (ws) => {
         flashlightItems: room.flashlightItems,
         ammoItems: room.ammoItems,
         umpAvailable: room.umpAvailable,
-        umpItems: room.umpItems
+        umpItems: room.umpItems,
+        dozeAvailable: room.dozeAvailable,
+        dozeItems: room.dozeItems
         });
         return;
       }
@@ -363,7 +369,7 @@ wss.on('connection', (ws) => {
       }
 
       room.players.set(ws.id, ws);
-      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false });
+      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
@@ -381,7 +387,9 @@ wss.on('connection', (ws) => {
           flashlightItems: room.flashlightItems,
           ammoItems: room.ammoItems,
         umpAvailable: room.umpAvailable,
-        umpItems: room.umpItems
+        umpItems: room.umpItems,
+        dozeAvailable: room.dozeAvailable,
+        dozeItems: room.dozeItems
       });
 
       for (const [playerId, state] of room.states) {
@@ -446,7 +454,8 @@ wss.on('connection', (ws) => {
       message.type === 'collectFlashlight' ||
       message.type === 'collectPistol' ||
       message.type === 'collectAmmo' ||
-      message.type === 'collectUMP'
+      message.type === 'collectUMP' ||
+      message.type === 'collectDoze'
     ) {
       const room = rooms.get(ws.roomCode);
       if (!room || !room.players.has(ws.id)) return;
@@ -454,7 +463,8 @@ wss.on('connection', (ws) => {
       const itemType = message.type === 'collectFlashlight'
         ? 'flashlight'
         : message.type === 'collectPistol' ? 'pistol'
-        : message.type === 'collectUMP' ? 'ump' : 'ammo';
+        : message.type === 'collectUMP' ? 'ump'
+        : message.type === 'collectDoze' ? 'doze' : 'ammo';
 
       const field = itemType + 'Items';
       const itemId = Number(message.itemId ?? 0);
@@ -509,8 +519,12 @@ wss.on('connection', (ws) => {
       if (!shooterState) return;
 
       const now = Date.now();
+      const weapon = ['pistol', 'ump', 'doze'].includes(message.weapon)
+        ? message.weapon
+        : 'pistol';
+      const shotIntervals = { pistol: 1000, ump: 80, doze: 1000 };
       const previousShot = room.lastShotAt.get(ws.id) || 0;
-      if (now - previousShot < 250) return;
+      if (now - previousShot < shotIntervals[weapon]) return;
       room.lastShotAt.set(ws.id, now);
 
       // Prioriza a mira real enviada pelo cliente; mantém fallback compatível.
@@ -534,6 +548,19 @@ wss.on('connection', (ws) => {
   const dy = useCameraAim ? direction.y / directionLength : -Math.sin(pitch);
   const dz = useCameraAim ? direction.z / directionLength : -Math.cos(yaw) * Math.cos(pitch);
 
+  const shotDirections = [{ x: dx, y: dy, z: dz }];
+  if (weapon === 'doze') {
+    const right = { x: -dz, y: 0, z: dx };
+    const up = { x: -dx * dy, y: dx * dx + dz * dz, z: -dz * dy };
+    for (const [horizontal, vertical] of [[-0.045, 0], [0.045, 0], [0, -0.045], [0, 0.045]]) {
+      const vx = dx + right.x * horizontal + up.x * vertical;
+      const vy = dy + right.y * horizontal + up.y * vertical;
+      const vz = dz + right.z * horizontal + up.z * vertical;
+      const length = Math.hypot(vx, vy, vz) || 1;
+      shotDirections.push({ x: vx / length, y: vy / length, z: vz / length });
+    }
+  }
+
   const sx = useCameraAim ? origin.x : shooterState.x;
   const sy = useCameraAim ? origin.y : (shooterState.y || 0) + (shooterState.crouching ? 0.95 : 1.35);
   const sz = useCameraAim ? origin.z : shooterState.z;
@@ -550,36 +577,63 @@ wss.on('connection', (ws) => {
   let targetDistance = maxRange + 1;
   let targetPart = null;
   let baseDamage = 0;
+  const pelletDamageByTarget = new Map();
 
-  for (const [otherId, targetState] of room.states) {
-    if (otherId === ws.id || !room.players.has(otherId)) continue;
+  for (const shotDirection of shotDirections) {
+    let pelletTargetId = null;
+    let pelletDistance = maxRange + 1;
+    let pelletPart = null;
+    let pelletDamage = 0;
 
-    const tx = targetState.x - sx;
-    const tz = targetState.z - sz;
-    const targetY = targetState.y || 0;
-    const crouchOffset = targetState.crouching ? 0.65 : 0;
+    for (const [otherId, targetState] of room.states) {
+      if (otherId === ws.id || !room.players.has(otherId)) continue;
 
-    for (const zone of hitZones) {
-      const zoneY = targetY + zone.y - crouchOffset;
-      const ty = zoneY - sy;
-      const along = tx * dx + ty * dy + tz * dz;
+      const tx = targetState.x - sx;
+      const tz = targetState.z - sz;
+      const targetY = targetState.y || 0;
+      const crouchOffset = targetState.crouching ? 0.65 : 0;
 
-      if (along < 0 || along > maxRange || along >= targetDistance) {
-        continue;
+      for (const zone of hitZones) {
+        const zoneY = targetY + zone.y - crouchOffset;
+        const ty = zoneY - sy;
+        const along = tx * shotDirection.x +
+          ty * shotDirection.y + tz * shotDirection.z;
+
+        if (along < 0 || along > maxRange || along >= pelletDistance) continue;
+
+        const px = tx - along * shotDirection.x;
+        const py = ty - along * shotDirection.y;
+        const pz = tz - along * shotDirection.z;
+
+        if (px * px + py * py + pz * pz > zone.radius * zone.radius) continue;
+
+        pelletTargetId = otherId;
+        pelletDistance = along;
+        pelletPart = zone.part;
+        pelletDamage = zone.damage;
       }
+    }
 
-      const px = tx - along * dx;
-      const py = ty - along * dy;
-      const pz = tz - along * dz;
+    if (pelletTargetId) {
+      const previous = pelletDamageByTarget.get(pelletTargetId) || {
+        damage: 0,
+        distance: pelletDistance,
+        part: pelletPart
+      };
 
-      if (px * px + py * py + pz * pz > zone.radius * zone.radius) {
-        continue;
-      }
+      previous.damage += pelletDamage;
+      previous.distance = Math.min(previous.distance, pelletDistance);
+      previous.part = pelletPart;
+      pelletDamageByTarget.set(pelletTargetId, previous);
+    }
+  }
 
-      targetId = otherId;
-      targetDistance = along;
-      targetPart = zone.part;
-      baseDamage = zone.damage;
+  for (const [id, hit] of pelletDamageByTarget) {
+    if (hit.damage > baseDamage) {
+      targetId = id;
+      baseDamage = Math.min(100, hit.damage);
+      targetDistance = hit.distance;
+      targetPart = hit.part;
     }
   }
 
