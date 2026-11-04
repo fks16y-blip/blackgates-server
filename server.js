@@ -610,12 +610,15 @@ wss.on('connection', (ws) => {
         const py = ty - along * shotDirection.y;
         const pz = tz - along * shotDirection.z;
 
-        if (px * px + py * py + pz * pz > zone.radius * zone.radius) continue;
+        const radialDistance = px * px + py * py + pz * pz;
+        if (radialDistance > zone.radius * zone.radius) continue;
 
-        pelletTargetId = otherId;
-        pelletDistance = along;
-        pelletPart = zone.part;
-        pelletDamage = zone.damage;
+        if (along < pelletDistance) {
+          pelletTargetId = otherId;
+          pelletDistance = along;
+          pelletPart = zone.part;
+          pelletDamage = zone.damage;
+        }
       }
     }
 
