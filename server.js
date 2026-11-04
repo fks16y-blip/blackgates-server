@@ -566,7 +566,12 @@ wss.on('connection', (ws) => {
   const sz = useCameraAim ? origin.z : shooterState.z;
 
   const maxRange = 20;
-  const hitZones = [
+  const hitZones = weapon === 'doze' ? [
+    { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 34 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 25 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 12 }
+  ] : [
     { part: 'head', y: 1.68, radius: 0.38, damage: 45 },
     { part: 'chest', y: 1.22, radius: 0.60, damage: 25 },
     { part: 'arms', y: 0.98, radius: 0.72, damage: 10 },
@@ -621,9 +626,17 @@ wss.on('connection', (ws) => {
         part: pelletPart
       };
 
-      previous.damage += pelletDamage;
-      previous.distance = Math.min(previous.distance, pelletDistance);
-      previous.part = pelletPart;
+      if (weapon === 'doze') {
+        if (pelletDamage > previous.damage) {
+          previous.damage = pelletDamage;
+          previous.part = pelletPart;
+        }
+        previous.distance = Math.min(previous.distance, pelletDistance);
+      } else {
+        previous.damage += pelletDamage;
+        previous.distance = Math.min(previous.distance, pelletDistance);
+        previous.part = pelletPart;
+      }
       pelletDamageByTarget.set(pelletTargetId, previous);
     }
   }
@@ -653,7 +666,7 @@ wss.on('connection', (ws) => {
           targetState.x - shooterState.x,
           targetState.z - shooterState.z
         );
-        const distanceMultiplier =
+        const distanceMultiplier = weapon === 'doze' ? 1 :
           damageDistance <= 5 ? 1 :
           damageDistance <= 10 ? 0.8 :
           damageDistance <= 15 ? 0.6 : 0.35;
