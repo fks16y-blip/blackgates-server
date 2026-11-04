@@ -630,10 +630,8 @@ wss.on('connection', (ws) => {
       };
 
       if (weapon === 'doze') {
-        if (pelletDamage > previous.damage) {
-          previous.damage = pelletDamage;
-          previous.part = pelletPart;
-        }
+        previous.zoneHits ||= { head: 0, chest: 0, arms: 0, legs: 0 };
+        previous.zoneHits[pelletPart]++;
         previous.distance = Math.min(previous.distance, pelletDistance);
       } else {
         previous.damage += pelletDamage;
@@ -641,6 +639,20 @@ wss.on('connection', (ws) => {
         previous.part = pelletPart;
       }
       pelletDamageByTarget.set(pelletTargetId, previous);
+    }
+  }
+
+  if (weapon === 'doze') {
+    for (const hit of pelletDamageByTarget.values()) {
+      const counts = hit.zoneHits || {};
+      let part = 'chest';
+      for (const candidate of ['arms', 'legs', 'head']) {
+        if ((counts[candidate] || 0) > (counts[part] || 0)) {
+          part = candidate;
+        }
+      }
+      hit.part = part;
+      hit.damage = { head: 100, chest: 34, arms: 25, legs: 12 }[part];
     }
   }
 
