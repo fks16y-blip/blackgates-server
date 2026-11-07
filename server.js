@@ -54,9 +54,10 @@ function startRoomBots(room) {
     const n = room.bots.size + 1;
     const id = `bot-${n}`;
     const angle = (n / Math.max(1, wanted)) * Math.PI * 2;
+    // A SALA TEST usa centro 2000,2000 no cliente.
     const state = {
-      x: 1000 + Math.cos(angle) * (100 + n * 7), y: 85,
-      z: 1000 + Math.sin(angle) * (100 + n * 7),
+      x: 2000 + Math.cos(angle) * (100 + n * 7), y: 85,
+      z: 2000 + Math.sin(angle) * (100 + n * 7),
       rotationY: angle + Math.PI, yaw: angle + Math.PI, aimPitch: 0,
       moving: true, running: true, jumping: false, crouching: false,
       pistolEquipped: false, umpEquipped: false, dozeEquipped: false,
@@ -118,8 +119,8 @@ function tickRoomBots(room) {
       }
     } else if (!state.parachuting && now >= bot.nextMoveAt) {
       const a = Math.random() * Math.PI * 2;
-      state.x = Math.max(620, Math.min(1380, state.x + Math.cos(a) * 8));
-      state.z = Math.max(620, Math.min(1380, state.z + Math.sin(a) * 8));
+      state.x = Math.max(1562, Math.min(2438, state.x + Math.cos(a) * 8));
+      state.z = Math.max(1562, Math.min(2438, state.z + Math.sin(a) * 8));
       state.yaw = Math.atan2(-Math.cos(a), -Math.sin(a)); state.rotationY = state.yaw;
       state.moving = true; state.running = true; bot.nextMoveAt = now + 1800;
     }
