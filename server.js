@@ -38,7 +38,7 @@ function broadcast(room, data, excludedId = null) {
 
 
 function resetX1Items(room) {
-  for (const type of ['pistol', 'flashlight', 'ammo', 'ump', 'doze']) {
+  for (const type of ['pistol', 'flashlight', 'ammo', 'ump', 'doze', 'm107']) {
     const field = type + 'Items';
     room[field] = room[field].map(() => true);
     room[type + 'Available'] = true;
@@ -51,8 +51,22 @@ function resetX1Items(room) {
     });
   }
 
+  for (const ammoType of ['ump', 'doze', 'm107']) {
+    const field = ammoType + 'AmmoItems';
+    room[field] = room[field].map(() => true);
+    room[ammoType + 'AmmoAvailable'] = true;
+    broadcast(room, {
+      type: 'itemAvailability',
+      itemType: 'ammo',
+      ammoType,
+      items: [...room[field]],
+      available: true,
+      playerId: null
+    });
+  }
+
   for (const id of room.players.keys()) {
-    room.inventory.set(id, { pistol: false, flashlight: false, ump: false, doze: false });
+    room.inventory.set(id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
     room.hp.set(id, 100);
     room.lastShotAt.set(id, 0);
     send(room.players.get(id), {
@@ -263,10 +277,18 @@ wss.on('connection', (ws) => {
         pistolItems: [true, true],
         flashlightItems: [true, true],
         ammoItems: [true, true],
+        umpAmmoAvailable: true,
+        umpAmmoItems: [true, true],
+        dozeAmmoAvailable: true,
+        dozeAmmoItems: [true, true],
+        m107AmmoAvailable: true,
+        m107AmmoItems: [true, true],
         umpAvailable: true,
         umpItems: [true, true],
         dozeAvailable: true,
         dozeItems: [true, true],
+        m107Available: true,
+        m107Items: [true, true],
         inventory: new Map(),
         hp: new Map(),
         lastShotAt: new Map(),
@@ -280,7 +302,7 @@ wss.on('connection', (ws) => {
 
       rooms.set(code, room);
       room.players.set(ws.id, ws);
-      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false });
+      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
@@ -297,10 +319,15 @@ wss.on('connection', (ws) => {
         pistolItems: room.pistolItems,
         flashlightItems: room.flashlightItems,
         ammoItems: room.ammoItems,
+        umpAmmoItems: room.umpAmmoItems,
+        dozeAmmoItems: room.dozeAmmoItems,
+        m107AmmoItems: room.m107AmmoItems,
         umpAvailable: room.umpAvailable,
         umpItems: room.umpItems,
         dozeAvailable: room.dozeAvailable,
-        dozeItems: room.dozeItems
+        dozeItems: room.dozeItems,
+        m107Available: room.m107Available,
+        m107Items: room.m107Items
       });
 
       return;
@@ -340,10 +367,15 @@ wss.on('connection', (ws) => {
         pistolItems: room.pistolItems,
         flashlightItems: room.flashlightItems,
         ammoItems: room.ammoItems,
+        umpAmmoItems: room.umpAmmoItems,
+        dozeAmmoItems: room.dozeAmmoItems,
+        m107AmmoItems: room.m107AmmoItems,
         umpAvailable: room.umpAvailable,
         umpItems: room.umpItems,
         dozeAvailable: room.dozeAvailable,
-        dozeItems: room.dozeItems
+        dozeItems: room.dozeItems,
+        m107Available: room.m107Available,
+        m107Items: room.m107Items
         });
         return;
       }
@@ -369,7 +401,7 @@ wss.on('connection', (ws) => {
       }
 
       room.players.set(ws.id, ws);
-      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false });
+      room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
       ws.roomCode = code;
@@ -386,10 +418,15 @@ wss.on('connection', (ws) => {
           pistolItems: room.pistolItems,
           flashlightItems: room.flashlightItems,
           ammoItems: room.ammoItems,
+        umpAmmoItems: room.umpAmmoItems,
+        dozeAmmoItems: room.dozeAmmoItems,
+        m107AmmoItems: room.m107AmmoItems,
         umpAvailable: room.umpAvailable,
         umpItems: room.umpItems,
         dozeAvailable: room.dozeAvailable,
-        dozeItems: room.dozeItems
+        dozeItems: room.dozeItems,
+        m107Available: room.m107Available,
+        m107Items: room.m107Items
       });
 
       for (const [playerId, state] of room.states) {
@@ -450,12 +487,76 @@ wss.on('connection', (ws) => {
     }
 
 
+    if (message.type === 'swapWeapon') {
+      const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) return;
+
+      const allowed = ['pistol', 'ump', 'doze', 'm107'];
+      const incomingType = message.incomingType;
+      const droppedType = message.droppedType;
+      const itemId = Number(message.itemId);
+      const inventory = room.inventory.get(ws.id);
+
+      if (
+        !inventory ||
+        !allowed.includes(incomingType) ||
+        !allowed.includes(droppedType) ||
+        incomingType === droppedType ||
+        !inventory[droppedType]
+      ) {
+        send(ws, { type: 'weaponSwapRejected', reason: 'invalid_inventory' });
+        return;
+      }
+
+      const incomingItems = room[incomingType + 'Items'];
+      const droppedItems = room[droppedType + 'Items'];
+
+      if (
+        !Number.isInteger(itemId) ||
+        itemId < 0 ||
+        itemId >= incomingItems.length ||
+        !incomingItems[itemId]
+      ) {
+        send(ws, { type: 'weaponSwapRejected', reason: 'unavailable' });
+        return;
+      }
+
+      const droppedItemId = droppedItems.findIndex(value => !value);
+      if (droppedItemId < 0) {
+        send(ws, { type: 'weaponSwapRejected', reason: 'no_drop_space' });
+        return;
+      }
+
+      incomingItems[itemId] = false;
+      droppedItems[droppedItemId] = true;
+      inventory[incomingType] = true;
+      inventory[droppedType] = false;
+
+      room[incomingType + 'Available'] = incomingItems.some(Boolean);
+      room[droppedType + 'Available'] = droppedItems.some(Boolean);
+
+      broadcast(room, {
+        type: 'weaponSwap',
+        playerId: ws.id,
+        incomingType,
+        droppedType,
+        incomingItemId: itemId,
+        droppedItemId,
+        pistolItems: [...room.pistolItems],
+        umpItems: [...room.umpItems],
+        dozeItems: [...room.dozeItems],
+        m107Items: [...room.m107Items]
+      });
+      return;
+    }
+
     if (
       message.type === 'collectFlashlight' ||
       message.type === 'collectPistol' ||
       message.type === 'collectAmmo' ||
       message.type === 'collectUMP' ||
-      message.type === 'collectDoze'
+      message.type === 'collectDoze' ||
+      message.type === 'collectM107'
     ) {
       const room = rooms.get(ws.roomCode);
       if (!room || !room.players.has(ws.id)) return;
@@ -464,9 +565,15 @@ wss.on('connection', (ws) => {
         ? 'flashlight'
         : message.type === 'collectPistol' ? 'pistol'
         : message.type === 'collectUMP' ? 'ump'
-        : message.type === 'collectDoze' ? 'doze' : 'ammo';
+        : message.type === 'collectDoze' ? 'doze'
+        : message.type === 'collectM107' ? 'm107' : 'ammo';
 
-      const field = itemType + 'Items';
+      const ammoType = itemType === 'ammo'
+        ? (['ump', 'doze', 'm107'].includes(message.ammoType) ? message.ammoType : 'pistol')
+        : null;
+      const field = itemType === 'ammo'
+        ? (ammoType === 'pistol' ? 'ammoItems' : ammoType + 'AmmoItems')
+        : itemType + 'Items';
       const itemId = Number(message.itemId ?? 0);
       const items = room[field];
 
@@ -496,11 +603,15 @@ wss.on('connection', (ws) => {
       }
 
       items[itemId] = false;
-      room[itemType + 'Available'] = items.some(Boolean);
+      const availabilityKey = itemType === 'ammo'
+        ? (ammoType === 'pistol' ? 'ammoAvailable' : ammoType + 'AmmoAvailable')
+        : itemType + 'Available';
+      room[availabilityKey] = items.some(Boolean);
 
       broadcast(room, {
         type: 'itemAvailability',
         itemType,
+        ...(ammoType ? { ammoType } : {}),
         itemId,
         available: false,
         playerId: ws.id,
@@ -519,10 +630,10 @@ wss.on('connection', (ws) => {
       if (!shooterState) return;
 
       const now = Date.now();
-      const weapon = ['pistol', 'ump', 'doze'].includes(message.weapon)
+      const weapon = ['pistol', 'ump', 'doze', 'm107'].includes(message.weapon)
         ? message.weapon
         : 'pistol';
-      const shotIntervals = { pistol: 1000, ump: 80, doze: 1000 };
+      const shotIntervals = { pistol: 1000, ump: 80, doze: 1000, m107: 1500 };
       const previousShot = room.lastShotAt.get(ws.id) || 0;
       if (now - previousShot < shotIntervals[weapon]) return;
       room.lastShotAt.set(ws.id, now);
@@ -565,12 +676,17 @@ wss.on('connection', (ws) => {
   const sy = useCameraAim ? origin.y : (shooterState.y || 0) + (shooterState.crouching ? 0.95 : 1.35);
   const sz = useCameraAim ? origin.z : shooterState.z;
 
-  const maxRange = 20;
+  const maxRange = weapon === 'm107' ? 375 : 20;
   const hitZones = weapon === 'doze' ? [
     { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
     { part: 'chest', y: 1.22, radius: 0.60, damage: 34 },
     { part: 'arms', y: 0.98, radius: 0.72, damage: 25 },
     { part: 'legs', y: 0.48, radius: 0.58, damage: 12 }
+  ] : weapon === 'm107' ? [
+    { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 95 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 85 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 75 }
   ] : [
     { part: 'head', y: 1.68, radius: 0.38, damage: 45 },
     { part: 'chest', y: 1.22, radius: 0.60, damage: 25 },
