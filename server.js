@@ -41,6 +41,35 @@ function botCountForRoom(room) {
   return Math.max(0, Math.min(9, 10 - room.players.size));
 }
 
+// Reproduz no servidor a altura do terreno da SALA TEST (incluindo a montanha oeste).
+function botGroundHeight(worldX, worldZ) {
+  const x = worldX - 2000, z = worldZ - 2000;
+  const dx = x + 55, dz = z + 45;
+  const angle = Math.atan2(dz, dx);
+  const direction = 1 + 0.48 * Math.cos(angle - 0.7);
+  const irregularity = 1 + 0.045 * Math.sin(angle * 3 + 0.8) + 0.025 * Math.sin(angle * 5 - 1.4);
+  const radiusSquared = ((dx / 135) ** 2 + (dz / 125) ** 2) / (direction * irregularity) ** 2;
+  const shape = Math.max(0, 1 - radiusSquared);
+  let height = 56 * Math.pow(shape, 1.35);
+  for (const [hx, hz, h, radius] of [[-25,-270,3.2,11],[25,-278,4,12],[-22,-315,3.5,10],[24,-322,3,11]]) {
+    const d = Math.hypot(x-hx, z-hz);
+    height += h * Math.exp(-(d*d)/(2*radius*radius));
+  }
+  const mdx = x + 315, mdz = z;
+  const radius = Math.sqrt((mdx/90)**2 + (mdz/78)**2);
+  const cliffT = Math.max(0, Math.min(1, (radius-0.56)/0.22));
+  const cliffSmooth = cliffT*cliffT*(3-2*cliffT);
+  const mesaHeight = 36*(1-cliffSmooth);
+  const rampT = Math.max(0, Math.min(1, (-x-195)/105));
+  const rampCenterZ = 18*Math.sin(rampT*Math.PI*1.15);
+  const rampDistance = Math.abs(z-rampCenterZ);
+  const rampTaper = Math.max(0, Math.min(1, (rampDistance-11)/15));
+  const rampFade = 1-rampTaper*rampTaper*(3-2*rampTaper);
+  const rampHeight = 36*rampT;
+  height += Math.max(0, mesaHeight*(1-rampFade)+rampHeight*rampFade);
+  return height;
+}
+
 function startRoomBots(room) {
   const wanted = botCountForRoom(room);
   room.bots ||= new Map();
@@ -53,17 +82,17 @@ function startRoomBots(room) {
   while (room.bots.size < wanted) {
     const n = room.bots.size + 1;
     const id = `bot-${n}`;
-    const angle = (n / Math.max(1, wanted)) * Math.PI * 2;
-    // A SALA TEST usa centro 2000,2000 no cliente.
+    // Os bots começam dentro da aeronave, no mesmo corredor de voo do jogador.
+    const startX = 2000 - 438 + 35;
     const state = {
-      x: 2000 + Math.cos(angle) * (100 + n * 7), y: 85,
-      z: 2000 + Math.sin(angle) * (100 + n * 7),
-      rotationY: angle + Math.PI, yaw: angle + Math.PI, aimPitch: 0,
-      moving: true, running: true, jumping: false, crouching: false,
+      x: startX - 4 + (n % 3) * 1.5, y: 100,
+      z: 2000 + ((n % 5) - 2) * 0.72,
+      rotationY: -Math.PI / 2, yaw: -Math.PI / 2, aimPitch: 0,
+      moving: false, running: false, jumping: false, crouching: false,
       pistolEquipped: false, umpEquipped: false, dozeEquipped: false,
-      m107Equipped: false, flashlightEquipped: false, parachuting: true
+      m107Equipped: false, flashlightEquipped: false, parachuting: false
     };
-    room.bots.set(id, { id, targetId: null, thinkAt: 0, nextMoveAt: 0, landedAt: 0, dead: false, weapon: 'pistol' });
+    room.bots.set(id, { id, phase: 'flight', targetId: null, thinkAt: 0, nextMoveAt: 0, landedAt: 0, dead: false, weapon: 'pistol' });
     room.states.set(id, state); room.hp.set(id, 100);
     room.inventory.set(id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
     room.lastShotAt.set(id, 0);
@@ -79,9 +108,37 @@ function tickRoomBots(room) {
   for (const [id, bot] of room.bots || []) {
     const state = room.states.get(id);
     if (!state || bot.dead) continue;
-    if (state.parachuting) {
-      state.y = Math.max(0, state.y - 1.8);
-      if (state.y <= 0) { state.y = 0; state.parachuting = false; bot.landedAt = now; }
+
+    // Primeiro acompanham o avião; só saltam quando ele chega ao ponto de lançamento.
+    if (bot.phase === 'flight') {
+      state.x = Math.min(2000 + 438 - 8, state.x + 13);
+      state.y = 100;
+      state.z = 2000 + ((Number(id.split('-')[1]) % 5) - 2) * 0.72;
+      state.moving = false; state.running = false; state.parachuting = false;
+      if (state.x >= 2000 + 438 - 8) {
+        bot.phase = 'parachuting';
+        state.parachuting = true;
+        state.moving = true;
+      }
+      broadcast(room, { type: 'sync', playerId: id, state });
+      continue;
+    }
+
+    // Queda lenta com deslocamento para frente; pousa na altura real do relevo.
+    if (bot.phase === 'parachuting') {
+      state.x = Math.min(2000 + 438 - 3, state.x + 1.0);
+      const groundY = botGroundHeight(state.x, state.z);
+      state.y = Math.max(groundY + 1.0, state.y - 0.55);
+      state.moving = true; state.running = false; state.parachuting = true;
+      if (state.y <= groundY + 1.01) {
+        state.y = groundY + 1.0;
+        state.parachuting = false;
+        state.moving = false;
+        bot.phase = 'landed';
+        bot.landedAt = now;
+      }
+      broadcast(room, { type: 'sync', playerId: id, state });
+      continue;
     }
     let targetId = null, best = Infinity;
     for (const candidate of living) {
@@ -101,6 +158,7 @@ function tickRoomBots(room) {
         const step = Math.min(1.15, distance - 5);
         state.x += dx / (distance || 1) * step;
         state.z += dz / (distance || 1) * step;
+        state.y = botGroundHeight(state.x, state.z) + 1.0;
         state.moving = true; state.running = distance > 14;
         bot.nextMoveAt = now + 250;
       } else { state.moving = false; state.running = false; }
@@ -121,6 +179,7 @@ function tickRoomBots(room) {
       const a = Math.random() * Math.PI * 2;
       state.x = Math.max(1562, Math.min(2438, state.x + Math.cos(a) * 8));
       state.z = Math.max(1562, Math.min(2438, state.z + Math.sin(a) * 8));
+      state.y = botGroundHeight(state.x, state.z) + 1.0;
       state.yaw = Math.atan2(-Math.cos(a), -Math.sin(a)); state.rotationY = state.yaw;
       state.moving = true; state.running = true; bot.nextMoveAt = now + 1800;
     }
