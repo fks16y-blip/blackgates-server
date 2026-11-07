@@ -75,8 +75,6 @@ function startRoomBots(room) {
   room.bots ||= new Map();
   while (room.bots.size > wanted) {
     const id = [...room.bots.keys()].pop();
-    const removedBot = room.bots.get(id);
-    botReleaseLootTarget(room, removedBot);
     room.bots.delete(id); room.states.delete(id); room.hp.delete(id);
     room.inventory.delete(id); room.lastShotAt.delete(id);
     broadcast(room, { type: 'playerLeft', playerId: id });
@@ -106,7 +104,6 @@ function startRoomBots(room) {
       id, phase: 'flight', dropTarget,
       jumpX: startX + 160 + (n - 1) * 55,
       targetId: null, targetLockUntil: 0, lootTarget: null, lootThinkAt: 0,
-      personality: ['aggressive', 'cautious', 'scavenger'][(n - 1) % 3],
       thinkAt: 0, nextMoveAt: 0, nextSyncAt: 0,
       landedAt: 0, dead: false, weapon: null
     });
@@ -151,15 +148,7 @@ function botLootPosition(type, itemId) {
   }
   return { x: 2000 + x, z: 2000 + z };
 }
-function botReleaseLootTarget(room, bot) {
-  if (!bot?.lootTarget || !room.botLootReservations) return;
-  const key = `${bot.lootTarget.type}:${bot.lootTarget.itemId}`;
-  if (room.botLootReservations.get(key) === bot.id) room.botLootReservations.delete(key);
-  bot.lootTarget = null;
-}
-
 function findBotWeaponLoot(room, state, bot) {
-  room.botLootReservations ||= new Map();
   let best = null;
   for (const type of ['pistol','ump','doze','m107']) {
     const inv = room.inventory.get(bot.id) || {};
@@ -167,9 +156,6 @@ function findBotWeaponLoot(room, state, bot) {
     const items = room[type + 'Items'] || [];
     for (let itemId = 2; itemId < items.length; itemId++) {
       if (!items[itemId]) continue;
-      const reservationKey = `${type}:${itemId}`;
-      const reservedBy = room.botLootReservations.get(reservationKey);
-      if (reservedBy && reservedBy !== bot.id) continue;
       const pos = botLootPosition(type, itemId);
       if (!pos) continue;
       const distance = Math.hypot(pos.x-state.x, pos.z-state.z);
@@ -182,7 +168,6 @@ function botCollectWeapon(room, bot, state, loot) {
   const items = room[loot.type + 'Items'];
   if (!items || !items[loot.itemId]) return false;
   items[loot.itemId] = false;
-  room.botLootReservations?.delete(`${loot.type}:${loot.itemId}`);
   room[loot.type + 'Available'] = items.some(Boolean);
   const inv = room.inventory.get(bot.id) || {};
   inv[loot.type] = true;
@@ -265,44 +250,63 @@ function tickRoomBots(room) {
       const armedWeapon = ['m107', 'doze', 'ump', 'pistol'].find(type => inv[type]);
 
       if (!armedWeapon) {
-        // Recalcula o alvo de loot no máximo uma vez por segundo.
-        if (!bot.lootTarget || now >= (bot.lootThinkAt || 0) ||
-            !room[bot.lootTarget.type + 'Items']?.[bot.lootTarget.itemId]) {
-          botReleaseLootTarget(room, bot);
-          bot.lootTarget = findBotWeaponLoot(room, state, bot);
-          if (bot.lootTarget) room.botLootReservations.set(`${bot.lootTarget.type}:${bot.lootTarget.itemId}`, id);
-          bot.lootThinkAt = now + 1400 + ((parseInt(id.replace(/\D/g, ''), 10) || 1) % 4) * 180;
+        // Sem arma, os bots ainda caçam o jogador e tentam atacar de perto.
+        // Isso evita que fiquem parados ou só caminhem atrás de loot.
+        let preyId = null;
+        let preyDistance = Infinity;
+        for (const humanId of livingHumans) {
+          const human = room.states.get(humanId);
+          if (!human) continue;
+          const d = Math.hypot(human.x - state.x, human.z - state.z);
+          if (d < preyDistance) { preyDistance = d; preyId = humanId; }
         }
-        const loot = bot.lootTarget;
-        if (loot) {
-          const dx = loot.x - state.x, dz = loot.z - state.z;
-          const distance = Math.hypot(dx, dz);
+        if (preyId && preyDistance < 115) {
+          const prey = room.states.get(preyId);
+          const dx = prey.x - state.x, dz = prey.z - state.z;
           state.yaw = Math.atan2(-dx, -dz);
           state.rotationY = state.yaw;
-          if (distance <= 2.8) {
-            if (botCollectWeapon(room, bot, state, loot)) botReleaseLootTarget(room, bot);
-            state.moving = false; state.running = false;
-          } else if (now >= (bot.nextMoveAt || 0)) {
-            const step = Math.min(2.0, distance);
-            const next = clampBotPosition(
-              state.x + dx / (distance || 1) * step,
-              state.z + dz / (distance || 1) * step
-            );
+          if (preyDistance > 1.9 && now >= (bot.nextMoveAt || 0)) {
+            const step = Math.min(2.5, preyDistance - 1.5);
+            const next = clampBotPosition(state.x + dx / preyDistance * step, state.z + dz / preyDistance * step);
             state.x = next.x; state.z = next.z;
             state.y = Math.max(0, botGroundHeight(state.x, state.z));
             state.moving = true; state.running = true;
-            bot.nextMoveAt = now + 350;
+            bot.nextMoveAt = now + 280;
+          } else {
+            state.moving = false; state.running = false;
+            if (preyDistance <= 2.5 && now - (room.lastShotAt.get(id) || 0) >= 900) {
+              room.lastShotAt.set(id, now);
+              const oldHP = room.hp.get(preyId) ?? 100;
+              const newHP = Math.max(0, oldHP - 8);
+              room.hp.set(preyId, newHP);
+              broadcast(room, { type: 'playerHP', playerId: preyId, hp: newHP, maxHP: 100, damage: oldHP - newHP, attackerId: id });
+              if (newHP === 0) broadcast(room, { type: 'playerDeath', playerId: preyId });
+            }
           }
-        } else if (now >= (bot.nextMoveAt || 0)) {
-          // Sem loot disponível: patrulha local dentro do círculo jogável.
-          const a = Math.random() * Math.PI * 2;
-          const next = clampBotPosition(state.x + Math.cos(a) * 9, state.z + Math.sin(a) * 9);
-          state.x = next.x; state.z = next.z;
-          state.y = Math.max(0, botGroundHeight(state.x, state.z));
-          state.yaw = Math.atan2(-Math.cos(a), -Math.sin(a));
-          state.rotationY = state.yaw;
-          state.moving = true; state.running = true;
-          bot.nextMoveAt = now + 1800;
+        } else {
+          // Longe do jogador, saqueia armas. Cada bot continua escolhendo um loot próprio.
+          if (!bot.lootTarget || now >= (bot.lootThinkAt || 0) || !room[bot.lootTarget.type + 'Items']?.[bot.lootTarget.itemId]) {
+            bot.lootTarget = findBotWeaponLoot(room, state, bot);
+            bot.lootThinkAt = now + 1200;
+          }
+          const loot = bot.lootTarget;
+          if (loot) {
+            const dx = loot.x - state.x, dz = loot.z - state.z;
+            const distance = Math.hypot(dx, dz);
+            state.yaw = Math.atan2(-dx, -dz); state.rotationY = state.yaw;
+            if (distance <= 2.8) {
+              if (botCollectWeapon(room, bot, state, loot)) bot.lootTarget = null;
+              state.moving = false; state.running = false;
+            } else if (now >= (bot.nextMoveAt || 0)) {
+              const step = Math.min(2.2, distance);
+              const next = clampBotPosition(state.x + dx / distance * step, state.z + dz / distance * step);
+              state.x = next.x; state.z = next.z;
+              state.y = Math.max(0, botGroundHeight(state.x, state.z));
+              state.moving = true; state.running = true; bot.nextMoveAt = now + 320;
+            }
+          } else {
+            state.moving = false; state.running = false;
+          }
         }
       } else {
         // Prioridade real: jogadores humanos vivos. Bots só duelam entre si
@@ -318,13 +322,8 @@ function tickRoomBots(room) {
               const humanState = room.states.get(humanId);
               if (!humanState) continue;
               const distance = Math.hypot(humanState.x - state.x, humanState.z - state.z);
-              const targetHP = room.hp.get(humanId) ?? 100;
-              const botNumber = parseInt(id.replace(/\D/g, ''), 10) || 1;
-              // Personalidades distribuem os alvos: agressivos preferem feridos;
-              // cautelosos evitam atravessar a sala inteira atrás do mesmo jogador.
-              const woundedBonus = bot.personality === 'aggressive' ? (100 - targetHP) * 0.12 : 0;
-              const distanceBias = bot.personality === 'cautious' ? distance * 0.18 : 0;
-              const score = distance + distanceBias - woundedBonus + (botNumber % 3) * 7;
+              // Pequena variação por bot para distribuir a perseguição em salas cheias.
+              const score = distance + ((parseInt(id.replace(/\D/g, ''), 10) || 1) % 3) * 5;
               if (score < bestScore) { bestScore = score; targetId = humanId; }
             }
             bot.targetLockUntil = now + 3500;
@@ -348,27 +347,16 @@ function tickRoomBots(room) {
           state.yaw = Math.atan2(-dx, -dz);
           state.rotationY = state.yaw;
 
-          const lowHP = (room.hp.get(id) ?? 100) <= 35;
-          const preferredRange = armedWeapon === 'm107' ? 28
-            : armedWeapon === 'doze' ? 5
-            : armedWeapon === 'ump' ? 10 : 13;
-          const shouldRetreat = lowHP && bot.personality !== 'aggressive' && distance < 18;
-          if (now >= (bot.nextMoveAt || 0) &&
-              (distance > preferredRange + 3 || distance < preferredRange - 3 || shouldRetreat)) {
-            const direction = shouldRetreat || distance < preferredRange - 3 ? -1 : 1;
-            const lateral = bot.personality === 'scavenger' ? 0.18
-              : bot.personality === 'aggressive' ? -0.12 : 0.28;
-            const sideX = (-dz / (distance || 1)) * lateral;
-            const sideZ = (dx / (distance || 1)) * lateral;
-            const step = Math.min(1.55, Math.max(0.7, Math.abs(distance - preferredRange)));
+          if (distance > 8 && now >= (bot.nextMoveAt || 0)) {
+            const step = Math.min(1.8, distance - 6);
             const next = clampBotPosition(
-              state.x + (dx / (distance || 1)) * step * direction + sideX,
-              state.z + (dz / (distance || 1)) * step * direction + sideZ
+              state.x + dx / (distance || 1) * step,
+              state.z + dz / (distance || 1) * step
             );
             state.x = next.x; state.z = next.z;
             state.y = Math.max(0, botGroundHeight(state.x, state.z));
             state.moving = true; state.running = true;
-            bot.nextMoveAt = now + 420 + ((parseInt(id.replace(/\D/g, ''), 10) || 1) % 3) * 90;
+            bot.nextMoveAt = now + 350;
           } else {
             state.moving = false; state.running = false;
           }
@@ -646,7 +634,6 @@ wss.on('connection', (ws) => {
         code,
         players: new Map(),
         bots: new Map(),
-        botLootReservations: new Map(),
         botTimer: null,
         states: new Map(),
         roomLightsOn: true,
@@ -1059,20 +1046,20 @@ wss.on('connection', (ws) => {
 
   const maxRange = weapon === 'm107' ? 375 : 20;
   const hitZones = weapon === 'doze' ? [
-    { part: 'head', y: 1.68, radius: 0.46, damage: 100 },
-    { part: 'chest', y: 1.22, radius: 0.78, damage: 34 },
-    { part: 'arms', y: 0.98, radius: 0.82, damage: 25 },
-    { part: 'legs', y: 0.48, radius: 0.70, damage: 12 }
+    { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 34 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 25 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 12 }
   ] : weapon === 'm107' ? [
-    { part: 'head', y: 1.68, radius: 0.46, damage: 100 },
-    { part: 'chest', y: 1.22, radius: 0.78, damage: 95 },
-    { part: 'arms', y: 0.98, radius: 0.82, damage: 85 },
-    { part: 'legs', y: 0.48, radius: 0.70, damage: 75 }
+    { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 95 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 85 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 75 }
   ] : [
-    { part: 'head', y: 1.68, radius: 0.46, damage: 45 },
-    { part: 'chest', y: 1.22, radius: 0.78, damage: 25 },
-    { part: 'arms', y: 0.98, radius: 0.82, damage: 10 },
-    { part: 'legs', y: 0.48, radius: 0.70, damage: 12 }
+    { part: 'head', y: 1.68, radius: 0.38, damage: 45 },
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 25 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 10 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 12 }
   ];
 
   let targetId = null;
@@ -1162,6 +1149,26 @@ wss.on('connection', (ws) => {
     }
   }
 
+  // Fallback de acerto nos bots: absorve pequenas diferenças entre câmera,
+  // altura do terreno e posição dos ossos do modelo remoto, sem acertar através do mapa.
+  if (!targetId) {
+    for (const [botId] of (room.bots || new Map())) {
+      const botState = room.states.get(botId);
+      if (!botState || room.bots.get(botId)?.dead) continue;
+      const tx = botState.x - sx, ty = (botState.y || 0) + 1.0 - sy, tz = botState.z - sz;
+      const along = tx * dx + ty * dy + tz * dz;
+      if (along < 0 || along > maxRange) continue;
+      const px = tx - along * dx, py = ty - along * dy, pz = tz - along * dz;
+      const miss = Math.hypot(px, py, pz);
+      if (miss <= 1.65 && along < targetDistance) {
+        targetId = botId;
+        targetDistance = along;
+        targetPart = 'chest';
+        baseDamage = weapon === 'm107' ? 95 : weapon === 'doze' ? 34 : weapon === 'ump' ? 25 : 25;
+      }
+    }
+  }
+
   // O servidor confirma o tiro; os demais clientes reproduzem o som.
       broadcast(room, {
         type: 'shoot',
@@ -1201,9 +1208,7 @@ wss.on('connection', (ws) => {
           type: 'playerHit',
           playerId: targetId,
           attackerId: ws.id,
-          hp: newHP,
-          hitPart: hit.part,
-          targetIsBot: room.bots?.has(targetId) === true
+          hp: newHP
         });
 
         if (newHP === 0 && room.bots?.has(targetId)) {
