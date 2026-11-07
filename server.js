@@ -260,24 +260,26 @@ function tickRoomBots(room) {
           const d = Math.hypot(human.x - state.x, human.z - state.z);
           if (d < preyDistance) { preyDistance = d; preyId = humanId; }
         }
-        if (preyId && preyDistance < 115) {
+        if (preyId && (preyDistance < 350 || !findBotWeaponLoot(room, state, bot))) {
           const prey = room.states.get(preyId);
           const dx = prey.x - state.x, dz = prey.z - state.z;
           state.yaw = Math.atan2(-dx, -dz);
           state.rotationY = state.yaw;
-          if (preyDistance > 1.9 && now >= (bot.nextMoveAt || 0)) {
-            const step = Math.min(2.5, preyDistance - 1.5);
-            const next = clampBotPosition(state.x + dx / preyDistance * step, state.z + dz / preyDistance * step);
+          // Fecha até a distância de ataque. O limite anterior (1.9 m)
+          // deixava o bot alternando movimento e nunca entrando no golpe.
+          if (preyDistance > 2.8 && now >= (bot.nextMoveAt || 0)) {
+            const step = Math.min(2.8, preyDistance - 2.2);
+            const next = clampBotPosition(state.x + dx / Math.max(preyDistance, 0.001) * step, state.z + dz / Math.max(preyDistance, 0.001) * step);
             state.x = next.x; state.z = next.z;
             state.y = Math.max(0, botGroundHeight(state.x, state.z));
             state.moving = true; state.running = true;
-            bot.nextMoveAt = now + 280;
+            bot.nextMoveAt = now + 260;
           } else {
             state.moving = false; state.running = false;
-            if (preyDistance <= 2.5 && now - (room.lastShotAt.get(id) || 0) >= 900) {
+            if (preyDistance <= 3.2 && now - (room.lastShotAt.get(id) || 0) >= 800) {
               room.lastShotAt.set(id, now);
               const oldHP = room.hp.get(preyId) ?? 100;
-              const newHP = Math.max(0, oldHP - 8);
+              const newHP = Math.max(0, oldHP - 12);
               room.hp.set(preyId, newHP);
               broadcast(room, { type: 'playerHP', playerId: preyId, hp: newHP, maxHP: 100, damage: oldHP - newHP, attackerId: id });
               if (newHP === 0) broadcast(room, { type: 'playerDeath', playerId: preyId });
@@ -362,7 +364,7 @@ function tickRoomBots(room) {
           }
 
           const interval = { m107: 1500, doze: 1000, ump: 220, pistol: 1000 }[armedWeapon];
-          const range = armedWeapon === 'm107' ? 90 : 20;
+          const range = armedWeapon === 'm107' ? 180 : armedWeapon === 'doze' ? 35 : 60;
           if (distance <= range && now - (room.lastShotAt.get(id) || 0) >= interval) {
             room.lastShotAt.set(id, now);
             broadcast(room, { type: 'shoot', playerId: id, weapon: armedWeapon });
@@ -1018,7 +1020,7 @@ wss.on('connection', (ws) => {
   const directionLength = validAim
     ? Math.hypot(direction.x, direction.y, direction.z)
     : 0;
-  const useCameraAim = validAim && originOffset <= 8 &&
+  const useCameraAim = validAim && originOffset <= 30 &&
     directionLength >= 0.9 && directionLength <= 1.1;
 
   const yaw = shooterState.yaw || 0;
@@ -1044,7 +1046,7 @@ wss.on('connection', (ws) => {
   const sy = useCameraAim ? origin.y : (shooterState.y || 0) + (shooterState.crouching ? 0.95 : 1.35);
   const sz = useCameraAim ? origin.z : shooterState.z;
 
-  const maxRange = weapon === 'm107' ? 375 : 20;
+  const maxRange = weapon === 'm107' ? 375 : weapon === 'doze' ? 35 : 60;
   const hitZones = weapon === 'doze' ? [
     { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
     { part: 'chest', y: 1.22, radius: 0.60, damage: 34 },
@@ -1160,7 +1162,7 @@ wss.on('connection', (ws) => {
       if (along < 0 || along > maxRange) continue;
       const px = tx - along * dx, py = ty - along * dy, pz = tz - along * dz;
       const miss = Math.hypot(px, py, pz);
-      if (miss <= 1.65 && along < targetDistance) {
+      if (miss <= 2.65 && along < targetDistance) {
         targetId = botId;
         targetDistance = along;
         targetPart = 'chest';
