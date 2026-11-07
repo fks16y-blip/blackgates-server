@@ -37,6 +37,96 @@ function broadcast(room, data, excludedId = null) {
 }
 
 
+function botCountForRoom(room) {
+  return Math.max(0, Math.min(9, 10 - room.players.size));
+}
+
+function startRoomBots(room) {
+  const wanted = botCountForRoom(room);
+  room.bots ||= new Map();
+  while (room.bots.size > wanted) {
+    const id = [...room.bots.keys()].pop();
+    room.bots.delete(id); room.states.delete(id); room.hp.delete(id);
+    room.inventory.delete(id); room.lastShotAt.delete(id);
+    broadcast(room, { type: 'playerLeft', playerId: id });
+  }
+  while (room.bots.size < wanted) {
+    const n = room.bots.size + 1;
+    const id = `bot-${n}`;
+    const angle = (n / Math.max(1, wanted)) * Math.PI * 2;
+    const state = {
+      x: 1000 + Math.cos(angle) * (100 + n * 7), y: 85,
+      z: 1000 + Math.sin(angle) * (100 + n * 7),
+      rotationY: angle + Math.PI, yaw: angle + Math.PI, aimPitch: 0,
+      moving: true, running: true, jumping: false, crouching: false,
+      pistolEquipped: false, umpEquipped: false, dozeEquipped: false,
+      m107Equipped: false, flashlightEquipped: false, parachuting: true
+    };
+    room.bots.set(id, { id, targetId: null, thinkAt: 0, nextMoveAt: 0, landedAt: 0, dead: false, weapon: 'pistol' });
+    room.states.set(id, state); room.hp.set(id, 100);
+    room.inventory.set(id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
+    room.lastShotAt.set(id, 0);
+    broadcast(room, { type: 'sync', playerId: id, state });
+  }
+  if (!room.botTimer) room.botTimer = setInterval(() => tickRoomBots(room), 250);
+}
+
+function tickRoomBots(room) {
+  if (!rooms.has(room.code) || room.players.size === 0) return;
+  const now = Date.now();
+  const living = [...room.players.keys(), ...[...(room.bots || new Map()).keys()].filter(id => !room.bots.get(id).dead)];
+  for (const [id, bot] of room.bots || []) {
+    const state = room.states.get(id);
+    if (!state || bot.dead) continue;
+    if (state.parachuting) {
+      state.y = Math.max(0, state.y - 1.8);
+      if (state.y <= 0) { state.y = 0; state.parachuting = false; bot.landedAt = now; }
+    }
+    let targetId = null, best = Infinity;
+    for (const candidate of living) {
+      if (candidate === id || (room.bots.has(candidate) && room.bots.get(candidate).dead)) continue;
+      const other = room.states.get(candidate);
+      if (!other) continue;
+      const d = Math.hypot(other.x - state.x, other.z - state.z);
+      if (d < best) { best = d; targetId = candidate; }
+    }
+    bot.targetId = targetId;
+    const target = targetId && room.states.get(targetId);
+    if (target && !state.parachuting) {
+      const dx = target.x - state.x, dz = target.z - state.z;
+      const distance = Math.hypot(dx, dz);
+      state.yaw = Math.atan2(-dx, -dz); state.rotationY = state.yaw;
+      if (distance > 8 && now >= bot.nextMoveAt) {
+        const step = Math.min(1.15, distance - 5);
+        state.x += dx / (distance || 1) * step;
+        state.z += dz / (distance || 1) * step;
+        state.moving = true; state.running = distance > 14;
+        bot.nextMoveAt = now + 250;
+      } else { state.moving = false; state.running = false; }
+      if (distance <= 20 && now - (room.lastShotAt.get(id) || 0) >= 650) {
+        room.lastShotAt.set(id, now);
+        broadcast(room, { type: 'shoot', playerId: id });
+        const oldHP = room.hp.get(targetId) ?? 100;
+        const damage = distance <= 5 ? 17 : distance <= 10 ? 14 : 9;
+        const newHP = Math.max(0, oldHP - damage);
+        room.hp.set(targetId, newHP);
+        broadcast(room, { type: 'playerHP', playerId: targetId, hp: newHP, maxHP: 100, damage: oldHP-newHP, attackerId: id });
+        if (newHP === 0) {
+          if (room.bots.has(targetId)) room.bots.get(targetId).dead = true;
+          broadcast(room, { type: 'playerDeath', playerId: targetId });
+        }
+      }
+    } else if (!state.parachuting && now >= bot.nextMoveAt) {
+      const a = Math.random() * Math.PI * 2;
+      state.x = Math.max(620, Math.min(1380, state.x + Math.cos(a) * 8));
+      state.z = Math.max(620, Math.min(1380, state.z + Math.sin(a) * 8));
+      state.yaw = Math.atan2(-Math.cos(a), -Math.sin(a)); state.rotationY = state.yaw;
+      state.moving = true; state.running = true; bot.nextMoveAt = now + 1800;
+    }
+    broadcast(room, { type: 'sync', playerId: id, state });
+  }
+}
+
 function resetX1Items(room) {
   for (const type of ['pistol', 'flashlight', 'ammo', 'ump', 'doze', 'm107']) {
     const field = type + 'Items';
@@ -168,7 +258,10 @@ function leaveRoom(ws) {
   });
 
   if (room.players.size === 0) {
+    if (room.botTimer) clearInterval(room.botTimer);
     rooms.delete(code);
+  } else {
+    startRoomBots(room);
   }
 }
 
@@ -268,7 +361,10 @@ wss.on('connection', (ws) => {
       } while (rooms.has(code));
 
       const room = {
+        code,
         players: new Map(),
+        bots: new Map(),
+        botTimer: null,
         states: new Map(),
         roomLightsOn: true,
         pistolAvailable: true,
@@ -329,6 +425,7 @@ wss.on('connection', (ws) => {
         m107Available: room.m107Available,
         m107Items: room.m107Items
       });
+      startRoomBots(room);
 
       return;
     }
@@ -428,6 +525,7 @@ wss.on('connection', (ws) => {
         m107Available: room.m107Available,
         m107Items: room.m107Items
       });
+      startRoomBots(room);
 
       for (const [playerId, state] of room.states) {
         send(ws, {
@@ -707,7 +805,7 @@ wss.on('connection', (ws) => {
     let pelletDamage = 0;
 
     for (const [otherId, targetState] of room.states) {
-      if (otherId === ws.id || !room.players.has(otherId)) continue;
+      if (otherId === ws.id || (!room.players.has(otherId) && !room.bots?.has(otherId))) continue;
 
       const tx = targetState.x - sx;
       const tz = targetState.z - sz;
@@ -802,12 +900,14 @@ wss.on('connection', (ws) => {
           damageDistance <= 10 ? 0.8 :
           damageDistance <= 15 ? 0.6 : 0.35;
     const damage = Math.max(1, Math.round(baseDamage * distanceMultiplier));
-    const newHP = (room.x1Started && room.x1Phase === 'active' && inX1) ? Math.max(0, oldHP - damage) : oldHP;
+    const botCombat = room.bots?.has(ws.id) || room.bots?.has(targetId);
+        const damageAllowed = botCombat || (room.x1Started && room.x1Phase === 'active' && inX1);
+        const newHP = damageAllowed ? Math.max(0, oldHP - damage) : oldHP;
         room.hp.set(targetId, newHP);
 
-        const targetSocket = room.players.get(targetId);
-        send(targetSocket, {
+        broadcast(room, {
           type: 'playerHP',
+          playerId: targetId,
           hp: newHP,
           maxHP: 100,
           damage: oldHP - newHP,
@@ -820,6 +920,11 @@ wss.on('connection', (ws) => {
           attackerId: ws.id,
           hp: newHP
         });
+
+        if (newHP === 0 && room.bots?.has(targetId)) {
+          room.bots.get(targetId).dead = true;
+          broadcast(room, { type: 'playerDeath', playerId: targetId });
+        }
 
         if (newHP === 0 && inX1 && room.x1Started && room.x1Phase === 'active') {
           room.x1Phase = 'intermission';
