@@ -82,17 +82,30 @@ function startRoomBots(room) {
   while (room.bots.size < wanted) {
     const n = room.bots.size + 1;
     const id = `bot-${n}`;
-    // Os bots começam dentro da aeronave, no mesmo corredor de voo do jogador.
+    // Formação dentro do avião. Cada bot recebe uma zona e um ponto de salto próprios.
+    const dropZones = [
+      { x: 1685, z: 2000 }, { x: 1710, z: 2020 }, { x: 1665, z: 1980 },
+      { x: 1985, z: 1755 }, { x: 2015, z: 1765 }, { x: 1960, z: 1745 },
+      { x: 2040, z: 1790 }, { x: 2150, z: 1940 }, { x: 2220, z: 2050 }
+    ];
+    const dropTarget = dropZones[(n - 1) % dropZones.length];
     const startX = 2000 - 438 + 35;
+    const seatRow = Math.floor((n - 1) / 3);
+    const seatCol = ((n - 1) % 3) - 1;
     const state = {
-      x: startX - 4 + (n % 3) * 1.5, y: 100,
-      z: 2000 + ((n % 5) - 2) * 0.72,
+      x: startX - seatRow * 2.2, y: 100 + (seatRow % 2) * 0.15,
+      z: 2000 + seatCol * 2.4,
       rotationY: -Math.PI / 2, yaw: -Math.PI / 2, aimPitch: 0,
       moving: false, running: false, jumping: false, crouching: false,
       pistolEquipped: false, umpEquipped: false, dozeEquipped: false,
       m107Equipped: false, flashlightEquipped: false, parachuting: false
     };
-    room.bots.set(id, { id, phase: 'flight', targetId: null, thinkAt: 0, nextMoveAt: 0, landedAt: 0, dead: false, weapon: 'pistol' });
+    room.bots.set(id, {
+      id, phase: 'flight', dropTarget,
+      jumpX: startX + 160 + (n - 1) * 55,
+      targetId: null, thinkAt: 0, nextMoveAt: 0,
+      landedAt: 0, dead: false, weapon: null
+    });
     room.states.set(id, state); room.hp.set(id, 100);
     room.inventory.set(id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
     room.lastShotAt.set(id, 0);
@@ -109,14 +122,15 @@ function tickRoomBots(room) {
     const state = room.states.get(id);
     if (!state || bot.dead) continue;
 
-    // Primeiro acompanham o avião; só saltam quando ele chega ao ponto de lançamento.
+    // O avião segue a rota; cada bot salta em um ponto diferente, não no início.
     if (bot.phase === 'flight') {
-      state.x = Math.min(2000 + 438 - 8, state.x + 13);
+      state.x = Math.min(bot.jumpX, state.x + 13);
       state.y = 100;
-      state.z = 2000 + ((Number(id.split('-')[1]) % 5) - 2) * 0.72;
-      state.moving = false; state.running = false; state.parachuting = false;
-      if (state.x >= 2000 + 438 - 8) {
+      state.moving = false; state.running = false;
+      state.jumping = false; state.parachuting = false;
+      if (state.x >= bot.jumpX) {
         bot.phase = 'parachuting';
+        state.jumping = false;
         state.parachuting = true;
         state.moving = true;
       }
@@ -124,18 +138,27 @@ function tickRoomBots(room) {
       continue;
     }
 
-    // Queda lenta com deslocamento para frente; pousa na altura real do relevo.
+    // Paraquedas: deriva em direção à zona designada e respeita a altura do terreno.
     if (bot.phase === 'parachuting') {
-      state.x = Math.min(2000 + 438 - 3, state.x + 1.0);
-      const groundY = botGroundHeight(state.x, state.z);
-      state.y = Math.max(groundY + 1.0, state.y - 0.55);
-      state.moving = true; state.running = false; state.parachuting = true;
-      if (state.y <= groundY + 1.01) {
-        state.y = groundY + 1.0;
-        state.parachuting = false;
-        state.moving = false;
-        bot.phase = 'landed';
-        bot.landedAt = now;
+      const tx = bot.dropTarget.x, tz = bot.dropTarget.z;
+      const dx = tx - state.x, dz = tz - state.z;
+      const distance = Math.hypot(dx, dz);
+      const step = Math.min(1.8, distance);
+      if (distance > 0.01) {
+        state.x += dx / distance * step;
+        state.z += dz / distance * step;
+        state.yaw = Math.atan2(-dx, -dz);
+        state.rotationY = state.yaw;
+      }
+      const groundY = Math.max(0, botGroundHeight(state.x, state.z));
+      state.y = Math.max(groundY + 1.05, state.y - 0.45);
+      state.moving = distance > 2; state.running = false;
+      state.jumping = false; state.parachuting = true;
+      if (state.y <= groundY + 1.06) {
+        state.y = groundY + 1.05;
+        state.x = tx; state.z = tz;
+        state.parachuting = false; state.moving = false;
+        bot.phase = 'landed'; bot.landedAt = now;
       }
       broadcast(room, { type: 'sync', playerId: id, state });
       continue;
@@ -162,11 +185,18 @@ function tickRoomBots(room) {
         state.moving = true; state.running = distance > 14;
         bot.nextMoveAt = now + 250;
       } else { state.moving = false; state.running = false; }
-      if (distance <= 20 && now - (room.lastShotAt.get(id) || 0) >= 650) {
+      // Bot desarmado nunca causa dano. Só atira depois de possuir uma arma.
+      const inv = room.inventory.get(id) || {};
+      const armedWeapon = ['m107', 'doze', 'ump', 'pistol'].find(type => inv[type]);
+      if (armedWeapon && distance <= 20 &&
+          now - (room.lastShotAt.get(id) || 0) >= ({ m107: 1500, doze: 1000, ump: 180, pistol: 1000 }[armedWeapon])) {
         room.lastShotAt.set(id, now);
-        broadcast(room, { type: 'shoot', playerId: id });
+        broadcast(room, { type: 'shoot', playerId: id, weapon: armedWeapon });
         const oldHP = room.hp.get(targetId) ?? 100;
-        const damage = distance <= 5 ? 17 : distance <= 10 ? 14 : 9;
+        const damage = armedWeapon === 'm107' ? (distance <= 5 ? 95 : 55)
+          : armedWeapon === 'doze' ? (distance <= 5 ? 34 : 18)
+          : armedWeapon === 'ump' ? (distance <= 5 ? 12 : 7)
+          : (distance <= 5 ? 17 : 9);
         const newHP = Math.max(0, oldHP - damage);
         room.hp.set(targetId, newHP);
         broadcast(room, { type: 'playerHP', playerId: targetId, hp: newHP, maxHP: 100, damage: oldHP-newHP, attackerId: id });
