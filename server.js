@@ -184,7 +184,7 @@ function botCollectWeapon(room, bot, state, loot) {
 
 function clampBotPosition(x, z) {
   const center = 2000;
-  const maxRadius = 430;
+  const maxRadius = 385;
   const dx = x - center, dz = z - center;
   const distance = Math.hypot(dx, dz);
   if (distance <= maxRadius) return { x, z };
@@ -250,8 +250,21 @@ function tickRoomBots(room) {
       const armedWeapon = ['m107', 'doze', 'ump', 'pistol'].find(type => inv[type]);
 
       if (!armedWeapon) {
-        // Sem arma, os bots ainda caçam o jogador e tentam atacar de perto.
-        // Isso evita que fiquem parados ou só caminhem atrás de loot.
+        // Só coleta armas que encontrar no caminho; nunca abandona o jogador
+        // para atravessar o mapa atrás de um item distante.
+        const nearbyLoot = findBotWeaponLoot(room, state, bot);
+        if (nearbyLoot && nearbyLoot.distance <= 7) {
+          botCollectWeapon(room, bot, state, nearbyLoot);
+        }
+        const currentInventory = room.inventory.get(id) || {};
+        const pickedWeapon = ['m107', 'doze', 'ump', 'pistol'].find(type => currentInventory[type]);
+        if (pickedWeapon) {
+          bot.weapon = pickedWeapon;
+          for (const type of ['pistol', 'ump', 'doze', 'm107']) state[type + 'Equipped'] = type === pickedWeapon;
+        }
+
+        // Sem arma: perseguir sempre o jogador vivo mais próximo. Não desviar
+        // para loot distante; isso fazia os bots correrem para a borda do mapa.
         let preyId = null;
         let preyDistance = Infinity;
         for (const humanId of livingHumans) {
@@ -260,55 +273,47 @@ function tickRoomBots(room) {
           const d = Math.hypot(human.x - state.x, human.z - state.z);
           if (d < preyDistance) { preyDistance = d; preyId = humanId; }
         }
-        if (preyId && (preyDistance < 350 || !findBotWeaponLoot(room, state, bot))) {
+
+        if (preyId) {
           const prey = room.states.get(preyId);
-          const dx = prey.x - state.x, dz = prey.z - state.z;
+          const dx = prey.x - state.x;
+          const dz = prey.z - state.z;
+          const distance = Math.hypot(dx, dz);
           state.yaw = Math.atan2(-dx, -dz);
           state.rotationY = state.yaw;
-          // Fecha até a distância de ataque. O limite anterior (1.9 m)
-          // deixava o bot alternando movimento e nunca entrando no golpe.
-          if (preyDistance > 2.8 && now >= (bot.nextMoveAt || 0)) {
-            const step = Math.min(2.8, preyDistance - 2.2);
-            const next = clampBotPosition(state.x + dx / Math.max(preyDistance, 0.001) * step, state.z + dz / Math.max(preyDistance, 0.001) * step);
-            state.x = next.x; state.z = next.z;
+
+          if (distance > 2.6 && now >= (bot.nextMoveAt || 0)) {
+            const step = Math.min(3.2, Math.max(0, distance - 1.9));
+            const next = clampBotPosition(
+              state.x + dx / Math.max(distance, 0.001) * step,
+              state.z + dz / Math.max(distance, 0.001) * step
+            );
+            const moved = Math.hypot(next.x - state.x, next.z - state.z);
+            state.x = next.x;
+            state.z = next.z;
             state.y = Math.max(0, botGroundHeight(state.x, state.z));
-            state.moving = true; state.running = true;
-            bot.nextMoveAt = now + 260;
+            state.moving = moved > 0.05;
+            state.running = moved > 0.05;
+            bot.nextMoveAt = now + 220;
           } else {
-            state.moving = false; state.running = false;
-            if (preyDistance <= 3.2 && now - (room.lastShotAt.get(id) || 0) >= 800) {
-              room.lastShotAt.set(id, now);
-              const oldHP = room.hp.get(preyId) ?? 100;
-              const newHP = Math.max(0, oldHP - 12);
-              room.hp.set(preyId, newHP);
-              broadcast(room, { type: 'playerHP', playerId: preyId, hp: newHP, maxHP: 100, damage: oldHP - newHP, attackerId: id });
-              if (newHP === 0) broadcast(room, { type: 'playerDeath', playerId: preyId });
-            }
+            state.moving = false;
+            state.running = false;
+          }
+
+          if (distance <= 3.4 && now - (room.lastShotAt.get(id) || 0) >= 700) {
+            room.lastShotAt.set(id, now);
+            const oldHP = room.hp.get(preyId) ?? 100;
+            const newHP = Math.max(0, oldHP - 15);
+            room.hp.set(preyId, newHP);
+            broadcast(room, {
+              type: 'playerHP', playerId: preyId, hp: newHP,
+              maxHP: 100, damage: oldHP - newHP, attackerId: id
+            });
+            if (newHP === 0) broadcast(room, { type: 'playerDeath', playerId: preyId });
           }
         } else {
-          // Longe do jogador, saqueia armas. Cada bot continua escolhendo um loot próprio.
-          if (!bot.lootTarget || now >= (bot.lootThinkAt || 0) || !room[bot.lootTarget.type + 'Items']?.[bot.lootTarget.itemId]) {
-            bot.lootTarget = findBotWeaponLoot(room, state, bot);
-            bot.lootThinkAt = now + 1200;
-          }
-          const loot = bot.lootTarget;
-          if (loot) {
-            const dx = loot.x - state.x, dz = loot.z - state.z;
-            const distance = Math.hypot(dx, dz);
-            state.yaw = Math.atan2(-dx, -dz); state.rotationY = state.yaw;
-            if (distance <= 2.8) {
-              if (botCollectWeapon(room, bot, state, loot)) bot.lootTarget = null;
-              state.moving = false; state.running = false;
-            } else if (now >= (bot.nextMoveAt || 0)) {
-              const step = Math.min(2.2, distance);
-              const next = clampBotPosition(state.x + dx / distance * step, state.z + dz / distance * step);
-              state.x = next.x; state.z = next.z;
-              state.y = Math.max(0, botGroundHeight(state.x, state.z));
-              state.moving = true; state.running = true; bot.nextMoveAt = now + 320;
-            }
-          } else {
-            state.moving = false; state.running = false;
-          }
+          state.moving = false;
+          state.running = false;
         }
       } else {
         // Prioridade real: jogadores humanos vivos. Bots só duelam entre si
@@ -1162,7 +1167,7 @@ wss.on('connection', (ws) => {
       if (along < 0 || along > maxRange) continue;
       const px = tx - along * dx, py = ty - along * dy, pz = tz - along * dz;
       const miss = Math.hypot(px, py, pz);
-      if (miss <= 2.65 && along < targetDistance) {
+      if (miss <= 4.25 && along < targetDistance) {
         targetId = botId;
         targetDistance = along;
         targetPart = 'chest';
