@@ -676,7 +676,7 @@ wss.on('connection', (ws) => {
   const sy = useCameraAim ? origin.y : (shooterState.y || 0) + (shooterState.crouching ? 0.95 : 1.35);
   const sz = useCameraAim ? origin.z : shooterState.z;
 
-  const maxRange = weapon === 'm107' ? 375 : 20;
+  const maxRange = weapon === 'm107' ? 450 : 20;
   const obstacleDistance =
     Number.isFinite(message.obstacleDistance) && message.obstacleDistance >= 0
       ? message.obstacleDistance
@@ -802,7 +802,7 @@ wss.on('connection', (ws) => {
           targetState.x - shooterState.x,
           targetState.z - shooterState.z
         );
-        const distanceMultiplier = weapon === 'doze' ? 1 :
+        const distanceMultiplier = weapon === 'm107' || weapon === 'doze' ? 1 :
           damageDistance <= 5 ? 1 :
           damageDistance <= 10 ? 0.8 :
           damageDistance <= 15 ? 0.6 : 0.35;
