@@ -676,7 +676,7 @@ wss.on('connection', (ws) => {
   const sy = useCameraAim ? origin.y : (shooterState.y || 0) + (shooterState.crouching ? 0.95 : 1.35);
   const sz = useCameraAim ? origin.z : shooterState.z;
 
-  const maxRange = weapon === 'm107' ? 450 : 20;
+  const maxRange = weapon === 'm107' ? 500 : 20;
   const obstacleDistance =
     Number.isFinite(message.obstacleDistance) && message.obstacleDistance >= 0
       ? message.obstacleDistance
@@ -688,9 +688,9 @@ wss.on('connection', (ws) => {
     { part: 'legs', y: 0.48, radius: 0.58, damage: 12 }
   ] : weapon === 'm107' ? [
     { part: 'head', y: 1.68, radius: 0.38, damage: 100 },
-    { part: 'chest', y: 1.22, radius: 0.60, damage: 95 },
-    { part: 'arms', y: 0.98, radius: 0.72, damage: 85 },
-    { part: 'legs', y: 0.48, radius: 0.58, damage: 75 }
+    { part: 'chest', y: 1.22, radius: 0.60, damage: 90 },
+    { part: 'arms', y: 0.98, radius: 0.72, damage: 90 },
+    { part: 'legs', y: 0.48, radius: 0.58, damage: 90 }
   ] : [
     { part: 'head', y: 1.68, radius: 0.38, damage: 45 },
     { part: 'chest', y: 1.22, radius: 0.60, damage: 25 },
