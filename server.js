@@ -272,6 +272,7 @@ wss.on('connection', (ws) => {
         code,
         players: new Map(),
         states: new Map(),
+        ramps: [],
         roomLightsOn: true,
         pistolAvailable: true,
         flashlightAvailable: true,
@@ -358,6 +359,7 @@ wss.on('connection', (ws) => {
       if (ws.roomCode === code) {
         send(ws, {
           type: 'roomJoined',
+          ramps: room.ramps,
           roomCode: code,
           playerId: ws.id,
           players: [...room.players.keys()],
@@ -409,6 +411,7 @@ wss.on('connection', (ws) => {
 
       send(ws, {
         type: 'roomJoined',
+          ramps: room.ramps,
         roomCode: code,
         playerId: ws.id,
         players: [...room.players.keys()],
@@ -442,6 +445,24 @@ wss.on('connection', (ws) => {
         playerId: ws.id
       }, ws.id);
 
+      return;
+    }
+
+    if (message.type === 'buildRamp') {
+      const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) return;
+      const p = message.ramp?.position;
+      const r = message.ramp?.rotation;
+      if (!p || !r ||
+          ![p.x, p.y, p.z, r.x, r.y, r.z].every(Number.isFinite)) return;
+      if (room.ramps.length >= 100) return;
+      const ramp = {
+        id: String(message.ramp.id || `${ws.id}-${Date.now()}-${room.ramps.length}`),
+        position: { x: p.x, y: p.y, z: p.z },
+        rotation: { x: r.x, y: r.y, z: r.z }
+      };
+      room.ramps.push(ramp);
+      broadcast(room, { type: 'rampBuilt', ramp, playerId: ws.id }, ws.id);
       return;
     }
 
