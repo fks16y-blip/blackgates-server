@@ -152,6 +152,7 @@ function leaveRoom(ws) {
   if (room.hp) room.hp.delete(ws.id);
   if (room.lastShotAt) room.lastShotAt.delete(ws.id);
   if (room.x1Ready) room.x1Ready.clear();
+  if (room.lobbyReady) room.lobbyReady.clear();
   room.x1Started = false;
 
   broadcast(room, {
@@ -296,6 +297,7 @@ wss.on('connection', (ws) => {
         hp: new Map(),
         lastShotAt: new Map(),
         x1Ready: new Set(),
+    lobbyReady: new Set(),
         x1Started: false,
         x1Phase: 'waiting',
         x1RoundNumber: 0,
@@ -308,6 +310,11 @@ wss.on('connection', (ws) => {
       room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
+      room.states.set(ws.id, {
+        x: 0, y: 0, z: 0, rotationY: 0, yaw: 0,
+        moving: false, running: false, jumping: false,
+        crouching: false, skinTone: 'Normal', characterSet: 'default'
+      });
       ws.roomCode = code;
 
       send(ws, {
@@ -407,6 +414,11 @@ wss.on('connection', (ws) => {
       room.inventory.set(ws.id, { pistol: false, flashlight: false, ump: false, doze: false, m107: false });
       room.hp.set(ws.id, 100);
       room.lastShotAt.set(ws.id, 0);
+      room.states.set(ws.id, {
+        x: 0, y: 0, z: 0, rotationY: 0, yaw: 0,
+        moving: false, running: false, jumping: false,
+        crouching: false, skinTone: 'Normal', characterSet: 'default'
+      });
       ws.roomCode = code;
 
       send(ws, {
@@ -433,12 +445,19 @@ wss.on('connection', (ws) => {
         m107Items: room.m107Items
       });
       for (const [playerId, state] of room.states) {
+        if (playerId === ws.id) continue;
         send(ws, {
           type: 'sync',
           playerId,
           state
         });
       }
+
+      broadcast(room, {
+        type: 'sync',
+        playerId: ws.id,
+        state: room.states.get(ws.id)
+      }, ws.id);
 
       broadcast(room, {
         type: 'playerJoined',
@@ -978,6 +997,49 @@ wss.on('connection', (ws) => {
         }
       } else {
         console.log(`[SHOT_DEBUG] shooter=${ws.id} weapon=${weapon} result=MISS`);
+      }
+      return;
+    }
+
+    if (message.type === 'playReady') {
+      const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) {
+        send(ws, { type: 'error', message: 'Entre em uma sala primeiro.' });
+        return;
+      }
+
+      if (room.x1Started) return;
+
+      room.lobbyReady.add(ws.id);
+
+      const playerCount = room.players.size;
+      const readyCount = room.lobbyReady.size;
+
+      broadcast(room, {
+        type: 'playReadyUpdate',
+        readyPlayers: [...room.lobbyReady],
+        playerCount,
+        message: playerCount !== 2
+          ? 'AGUARDANDO OUTRO JOGADOR ENTRAR...'
+          : readyCount === 2
+            ? 'AMBOS PRONTOS! INICIANDO X1...'
+            : 'AGUARDANDO OUTRO JOGADOR...'
+      });
+
+      if (playerCount === 2 && readyCount === 2) {
+        const ids = [...room.players.keys()];
+        room.x1Started = true;
+        const spawns = {
+          [ids[0]]: { x: 976, y: 0, z: 1000 },
+          [ids[1]]: { x: 1024, y: 0, z: 1000 }
+        };
+
+        room.x1RoundNumber = 0;
+        room.x1Scores = new Map(ids.map(id => [id, 0]));
+        room.x1Phase = 'countdown';
+
+        broadcast(room, { type: 'x1Start', spawns });
+        startX1Round(room);
       }
       return;
     }
