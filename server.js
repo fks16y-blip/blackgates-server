@@ -912,7 +912,8 @@ wss.on('connection', (ws) => {
           hp: newHP,
           maxHP: 100,
           damage: oldHP - newHP,
-          attackerId: ws.id
+          attackerId: ws.id,
+          hitPart: targetPart
         });
 
         broadcast(room, {
