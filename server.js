@@ -977,6 +977,14 @@ wss.on('connection', (ws) => {
               room.x1Started = false;
               room.x1Phase = 'waiting';
               room.x1Ready.clear();
+              room.lobbyReady.clear();
+
+              broadcast(room, {
+                type: 'playReadyUpdate',
+                readyPlayers: [],
+                playerCount: room.players.size,
+                message: 'X1 encerrado. Os jogadores podem apertar JOGAR novamente.'
+              });
 
               broadcast(room, {
                 type: 'x1ReadyUpdate',
