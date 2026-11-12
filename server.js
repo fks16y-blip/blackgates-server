@@ -459,7 +459,8 @@ wss.on('connection', (ws) => {
       const ramp = {
         id: String(message.ramp.id || `${ws.id}-${Date.now()}-${room.ramps.length}`),
         position: { x: p.x, y: p.y, z: p.z },
-        rotation: { x: r.x, y: r.y, z: r.z }
+        rotation: { x: r.x, y: r.y, z: r.z },
+        hp: 100
       };
       room.ramps.push(ramp);
       broadcast(room, { type: 'rampBuilt', ramp, playerId: ws.id }, ws.id);
@@ -725,7 +726,52 @@ wss.on('connection', (ws) => {
   let baseDamage = 0;
   const pelletDamageByTarget = new Map();
 
+  let nearestRampHit = null;
+  const rampDamageByWeapon = { pistol: 25, ump: 10, doze: 34, m107: 90 };
+
   for (const shotDirection of shotDirections) {
+    let nearestRampDistance = Infinity;
+
+    for (const ramp of room.ramps) {
+      const yaw = ramp.rotation.y || 0;
+      const cos = Math.cos(yaw);
+      const sin = Math.sin(yaw);
+      const rx = sx - ramp.position.x;
+      const rz = sz - ramp.position.z;
+      const ox = cos * rx - sin * rz;
+      const oz = sin * rx + cos * rz;
+      const vx = cos * shotDirection.x - sin * shotDirection.z;
+      const vz = sin * shotDirection.x + cos * shotDirection.z;
+      const denominator = shotDirection.y - (2.6 / 6) * vz;
+      if (Math.abs(denominator) < 0.000001) continue;
+
+      let distance = 0;
+      for (let i = 0; i < 3; i++) {
+        const localX = ox + vx * distance;
+        const wave = Math.cos((localX / 3) * 24 * Math.PI) * 0.045;
+        distance = (
+          ramp.position.y + 2.6 * (oz + 3) / 6 + wave - sy
+        ) / denominator;
+      }
+
+      if (distance < 0 || distance > maxRange || distance >= nearestRampDistance) continue;
+
+      const localX = ox + vx * distance;
+      const localZ = oz + vz * distance;
+      const localY = sy + shotDirection.y * distance;
+      if (Math.abs(localX) > 1.5 || Math.abs(localZ) > 3) continue;
+
+      const wave = Math.cos((localX / 3) * 24 * Math.PI) * 0.045;
+      const surfaceY = ramp.position.y + 2.6 * (localZ + 3) / 6 + wave;
+      if (Math.abs(localY - surfaceY) > 0.12) continue;
+
+      nearestRampDistance = distance;
+      if (!nearestRampHit || distance < nearestRampHit.distance) {
+        nearestRampHit = { id: ramp.id, distance };
+      }
+    }
+
+    const effectiveObstacleDistance = Math.min(obstacleDistance, nearestRampDistance);
     let pelletTargetId = null;
     let pelletDistance = maxRange + 1;
     let pelletPart = null;
@@ -753,7 +799,7 @@ wss.on('connection', (ws) => {
 
         const radialDistance = px * px + py * py + pz * pz;
         if (radialDistance > zone.radius * zone.radius) continue;
-        if (along >= obstacleDistance - 0.15) continue;
+        if (along >= effectiveObstacleDistance - 0.15) continue;
 
         if (along < pelletDistance) {
           pelletTargetId = otherId;
@@ -781,6 +827,33 @@ wss.on('connection', (ws) => {
         previous.part = pelletPart;
       }
       pelletDamageByTarget.set(pelletTargetId, previous);
+    }
+  }
+
+  if (nearestRampHit) {
+    const rampIndex = room.ramps.findIndex(r => r.id === nearestRampHit.id);
+    if (rampIndex !== -1) {
+      const ramp = room.ramps[rampIndex];
+      const damage = rampDamageByWeapon[weapon] || 10;
+      ramp.hp = Math.max(0, (ramp.hp ?? 100) - damage);
+
+      broadcast(room, {
+        type: 'rampDamaged',
+        rampId: ramp.id,
+        hp: ramp.hp,
+        maxHP: 100,
+        damage,
+        attackerId: ws.id
+      });
+
+      if (ramp.hp <= 0) {
+        room.ramps.splice(rampIndex, 1);
+        broadcast(room, {
+          type: 'rampDestroyed',
+          rampId: ramp.id,
+          attackerId: ws.id
+        });
+      }
     }
   }
 
