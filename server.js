@@ -153,6 +153,7 @@ function leaveRoom(ws) {
   if (room.lastShotAt) room.lastShotAt.delete(ws.id);
   if (room.x1Ready) room.x1Ready.clear();
   if (room.lobbyReady) room.lobbyReady.clear();
+  if (room.x1Returned) room.x1Returned.clear();
   room.x1Started = false;
 
   broadcast(room, {
@@ -298,6 +299,7 @@ wss.on('connection', (ws) => {
         lastShotAt: new Map(),
         x1Ready: new Set(),
     lobbyReady: new Set(),
+        x1Returned: new Set(),
         x1Started: false,
         x1Phase: 'waiting',
         x1RoundNumber: 0,
@@ -1005,6 +1007,37 @@ wss.on('connection', (ws) => {
         }
       } else {
         console.log(`[SHOT_DEBUG] shooter=${ws.id} weapon=${weapon} result=MISS`);
+      }
+      return;
+    }
+
+    if (message.type === 'x1LobbyReturn') {
+      const room = rooms.get(ws.roomCode);
+      if (!room || !room.players.has(ws.id)) return;
+
+      if (!room.x1Returned) room.x1Returned = new Set();
+      room.x1Returned.add(ws.id);
+
+      if (room.x1Returned.size >= 2 && room.players.size === 2) {
+        room.x1Returned.clear();
+        room.x1Started = false;
+        room.x1Phase = 'waiting';
+        room.x1Ready.clear();
+        room.lobbyReady.clear();
+
+        broadcast(room, {
+          type: 'playReadyUpdate',
+          readyPlayers: [],
+          playerCount: room.players.size,
+          message: 'AMBOS VOLTARAM AO LOBBY! PODEM APERTAR JOGAR.'
+        });
+      } else {
+        send(ws, {
+          type: 'playReadyUpdate',
+          readyPlayers: [...room.lobbyReady],
+          playerCount: room.players.size,
+          message: 'AGUARDANDO O OUTRO JOGADOR VOLTAR AO LOBBY...'
+        });
       }
       return;
     }
