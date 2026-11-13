@@ -484,7 +484,15 @@ wss.on('connection', (ws) => {
       const r = message.ramp?.rotation;
       if (!p || !r ||
           ![p.x, p.y, p.z, r.x, r.y, r.z].every(Number.isFinite)) return;
-      if (room.ramps.length >= 100) return;
+      if (room.ramps.length >= 20) {
+        const oldestRamp = room.ramps.shift();
+        if (oldestRamp) {
+          broadcast(room, {
+            type: 'rampDestroyed',
+            rampId: oldestRamp.id
+          });
+        }
+      }
       const ramp = {
         id: String(message.ramp.id || `${ws.id}-${Date.now()}-${room.ramps.length}`),
         position: { x: p.x, y: p.y, z: p.z },
