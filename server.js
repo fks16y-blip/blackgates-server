@@ -75,12 +75,19 @@ function resetX1Items(room) {
   }
 }
 
+function resetRoomRamps(room) {
+  if (!Array.isArray(room.ramps)) room.ramps = [];
+  else room.ramps.length = 0;
+  broadcast(room, { type: 'rampsReset' });
+}
+
 function startX1Round(room) {
   if (!room.x1Started || room.players.size !== 2) return;
   if (room.x1RoundTimer) clearInterval(room.x1RoundTimer);
 
   room.x1RoundNumber = (room.x1RoundNumber || 0) + 1;
   room.x1Phase = 'countdown';
+  resetRoomRamps(room);
   resetX1Items(room);
 
   const ids = [...room.players.keys()];
@@ -155,6 +162,7 @@ function leaveRoom(ws) {
   if (room.lobbyReady) room.lobbyReady.clear();
   if (room.x1Returned) room.x1Returned.clear();
   room.x1Started = false;
+  resetRoomRamps(room);
 
   broadcast(room, {
     type: 'playerLeft',
@@ -977,6 +985,7 @@ wss.on('connection', (ws) => {
               if (room.players.size !== 2 || room.x1Phase !== 'finished') return;
 
               room.x1Started = false;
+              resetRoomRamps(room);
               room.x1Phase = 'waiting';
               room.x1Ready.clear();
               room.lobbyReady.clear();
@@ -1021,6 +1030,7 @@ wss.on('connection', (ws) => {
       if (room.x1Returned.size >= 2 && room.players.size === 2) {
         room.x1Returned.clear();
         room.x1Started = false;
+        resetRoomRamps(room);
         room.x1Phase = 'waiting';
         room.x1Ready.clear();
         room.lobbyReady.clear();
