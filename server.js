@@ -962,6 +962,9 @@ wss.on('connection', (ws) => {
 
 
         if (newHP === 0 && inX1 && room.x1Started && room.x1Phase === 'active') {
+          if (targetPart === 'head') {
+            send(ws, { type: 'x1HeadshotKill' });
+          }
           room.x1Phase = 'intermission';
           const scores = room.x1Scores || new Map();
           scores.set(ws.id, (scores.get(ws.id) || 0) + 1);
