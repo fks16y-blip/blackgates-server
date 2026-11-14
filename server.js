@@ -1236,7 +1236,7 @@ wss.on('connection', (ws) => {
     }
 
     if (message.type === 'ping') {
-      send(ws, { type: 'pong' });
+      send(ws, { type: 'pong', pingId: message.pingId });
     }
   });
 
